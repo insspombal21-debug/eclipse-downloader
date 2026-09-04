@@ -1,0 +1,60 @@
+name: Compilar aplicativo Windows
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Baixar codigo
+        uses: actions/checkout@v4
+
+      - name: Preparar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Instalar componentes
+        run: python -m pip install -r requirements.txt
+
+      - name: Gerar executavel portatil
+        run: >
+          pyinstaller
+          --noconfirm
+          --clean
+          --onefile
+          --windowed
+          --name "Eclipse Downloader"
+          --collect-all yt_dlp
+          --collect-all imageio_ffmpeg
+          app.py
+
+      - name: Criar pacote ZIP
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path portable
+          Copy-Item "dist/Eclipse Downloader.exe" "portable/Eclipse Downloader.exe"
+          @"
+          ECLIPSE DOWNLOADER - VERSAO PORTATIL
+
+          1. Extraia o arquivo ZIP.
+          2. Abra Eclipse Downloader.exe.
+          3. Nao e necessario instalar Python ou FFmpeg.
+
+          Use somente para conteudos proprios, autorizados ou em dominio publico.
+          "@ | Set-Content -Encoding UTF8 "portable/LEIA-ME.txt"
+          Compress-Archive -Path portable/* -DestinationPath EclipseDownloader-Portatil-Windows.zip
+
+      - name: Disponibilizar pacote
+        uses: actions/upload-artifact@v4
+        with:
+          name: EclipseDownloader-Portatil-Windows
+          path: EclipseDownloader-Portatil-Windows.zip
+          if-no-files-found: error
