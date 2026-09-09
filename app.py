@@ -1,10 +1,12 @@
-import io, os, queue, re, subprocess, threading, time, tkinter as tk, urllib.request, uuid
+import hashlib, io, json, os, queue, re, subprocess, sys, tempfile, threading, time, tkinter as tk, urllib.request, uuid, zipfile
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 import imageio_ffmpeg, yt_dlp
 from PIL import Image, ImageTk
 
 APP_NAME = "Eclipse Downloader"
+APP_VERSION = "4.0.0"
+RELEASE_API = "https://api.github.com/repos/insspombal21-debug/eclipse-downloader/releases/latest"
 HEIGHTS = {"Melhor disponível": None, "2160p (4K)": 2160, "1440p": 1440, "1080p": 1080, "720p": 720, "480p": 480, "360p": 360}
 
 class App(tk.Tk):
@@ -13,7 +15,8 @@ class App(tk.Tk):
         self.events, self.work = queue.Queue(), queue.Queue(); self.tasks, self.images = {}, {}; self.active = None
         self.mode, self.quality = tk.StringVar(value="Vídeo MP4"), tk.StringVar(value="1080p")
         self.folder = tk.StringVar(value=str(Path.home()/"Downloads")); self.playlist = tk.BooleanVar(); self.status = tk.StringVar(value="Cole links para começar")
-        self._style(); self._ui(); self.after(100, self._poll); threading.Thread(target=self._worker, daemon=True).start()
+        self.update_url = self.checksum_url = None
+        self._style(); self._ui(); self.after(100, self._poll); threading.Thread(target=self._worker, daemon=True).start(); self.after(1800, self._check_updates)
 
     def _style(self):
         s=ttk.Style(self); s.theme_use("clam"); s.configure("TFrame",background="#10131a"); s.configure("Card.TFrame",background="#191e29")
@@ -26,7 +29,9 @@ class App(tk.Tk):
         s.configure("Queue.Treeview.Heading",background="#282f3d",foreground="#eef2ff",font=("Segoe UI Semibold",10)); s.map("Queue.Treeview",background=[("selected","#343b4d")])
 
     def _ui(self):
-        out=ttk.Frame(self,padding=22); out.pack(fill="both",expand=True); ttk.Label(out,text=APP_NAME,style="Title.TLabel").pack(anchor="w")
+        out=ttk.Frame(self,padding=22); out.pack(fill="both",expand=True)
+        title_row=ttk.Frame(out); title_row.pack(fill="x"); ttk.Label(title_row,text=f"{APP_NAME}  v{APP_VERSION}",style="Title.TLabel").pack(side="left")
+        self.update_btn=ttk.Button(title_row,text="Verificar atualizações",command=self._check_updates); self.update_btn.pack(side="right")
         ttk.Label(out,text="Fila para conteúdos próprios ou autorizados",style="Muted.TLabel").pack(anchor="w",pady=(2,14))
         top=ttk.Frame(out,style="Card.TFrame",padding=16); top.pack(fill="x"); row=ttk.Frame(top,style="Card.TFrame"); row.pack(fill="x")
         self.urls=tk.Text(row,height=2,bg="#0f131b",fg="white",insertbackground="white",relief="flat",font=("Segoe UI",11),padx=10,pady=9); self.urls.pack(side="left",fill="x",expand=True)
@@ -136,6 +141,14 @@ class App(tk.Tk):
                 elif kind=="fail" and t:t["status"]="Erro na análise";t["error"]=e[2];self._row(i)
                 elif kind=="update":self._row(i)
                 elif kind=="remove":self._remove_task(i)
+                elif kind=="update_available":
+                    self.update_url,self.checksum_url=e[2],e[3];self.status.set(f"Nova versão {e[1]} disponível")
+                    self.update_btn.configure(state="normal",text="ATUALIZAR AGORA",command=self._start_update,style="Accent.TButton")
+                elif kind=="update_status":
+                    self.status.set(e[1]);self.update_btn.configure(state="normal",text="Verificar atualizações",command=self._check_updates,style="TButton")
+                elif kind=="update_error":
+                    self.update_btn.configure(state="normal",text="Tentar atualizar novamente",command=self._start_update)
+                    messagebox.showerror(APP_NAME,"Não foi possível atualizar:\n\n"+e[1])
         except queue.Empty:pass
         self.after(100,self._poll)
 
@@ -184,5 +197,44 @@ class App(tk.Tk):
     def _popup(self):
         if not self._sel():messagebox.showinfo(APP_NAME,"Selecione um item da fila.");return
         self.menu.tk_popup(*self.winfo_pointerxy())
+
+    @staticmethod
+    def _version_tuple(value):
+        return tuple(int(x) for x in re.findall(r"\d+",value)[:3])
+    def _check_updates(self):
+        self.update_btn.configure(state="disabled",text="Verificando...");threading.Thread(target=self._check_updates_thread,daemon=True).start()
+    def _check_updates_thread(self):
+        try:
+            req=urllib.request.Request(RELEASE_API,headers={"User-Agent":f"{APP_NAME}/{APP_VERSION}","Accept":"application/vnd.github+json"})
+            with urllib.request.urlopen(req,timeout=15) as response:data=json.load(response)
+            latest=str(data.get("tag_name","")).lstrip("vV");assets={a.get("name"):a.get("browser_download_url") for a in data.get("assets",[])}
+            package="EclipseDownloader-Portatil-Windows.zip";checksum=package+".sha256"
+            if latest and self._version_tuple(latest)>self._version_tuple(APP_VERSION) and assets.get(package) and assets.get(checksum):self.events.put(("update_available",latest,assets[package],assets[checksum]))
+            else:self.events.put(("update_status","Você já está usando a versão mais recente"))
+        except Exception:self.events.put(("update_status","Não foi possível verificar atualizações agora"))
+    def _start_update(self):
+        if not self.update_url or not self.checksum_url:return
+        self.update_btn.configure(state="disabled",text="Baixando atualização...");threading.Thread(target=self._update_thread,daemon=True).start()
+    def _update_thread(self):
+        try:
+            tmp=Path(tempfile.mkdtemp(prefix="eclipse-update-"));package=tmp/"update.zip"
+            req=urllib.request.Request(self.update_url,headers={"User-Agent":f"{APP_NAME}/{APP_VERSION}"})
+            with urllib.request.urlopen(req,timeout=120) as src,package.open("wb") as dst:
+                while True:
+                    chunk=src.read(1024*1024)
+                    if not chunk:break
+                    dst.write(chunk)
+            req=urllib.request.Request(self.checksum_url,headers={"User-Agent":f"{APP_NAME}/{APP_VERSION}"})
+            with urllib.request.urlopen(req,timeout=20) as response:expected=response.read().decode().strip().split()[0].lower()
+            actual=hashlib.sha256(package.read_bytes()).hexdigest().lower()
+            if actual!=expected:raise ValueError("A verificação de segurança do arquivo falhou.")
+            with zipfile.ZipFile(package) as archive:archive.extractall(tmp/"new")
+            new_exe=tmp/"new"/"Eclipse Downloader.exe";current=Path(sys.executable).resolve()
+            if not new_exe.exists():raise FileNotFoundError("O executável não foi encontrado no pacote.")
+            if current.suffix.lower()!=".exe":raise RuntimeError("A atualização automática funciona apenas no aplicativo portátil.")
+            script=tmp/"atualizar.bat";pid=os.getpid()
+            script.write_text(f'@echo off\r\n:wait\r\ntasklist /FI "PID eq {pid}" | find "{pid}" >nul\r\nif not errorlevel 1 (timeout /t 1 /nobreak >nul & goto wait)\r\ncopy /Y "{new_exe}" "{current}" >nul\r\nstart "" "{current}"\r\ndel "%~f0"\r\n',encoding="ascii")
+            subprocess.Popen(["cmd","/c",str(script)],creationflags=0x08000000);self.after(200,self.destroy)
+        except Exception as exc:self.events.put(("update_error",str(exc)))
 
 if __name__=="__main__":App().mainloop()
