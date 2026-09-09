@@ -5,7 +5,7 @@ import imageio_ffmpeg, yt_dlp
 from PIL import Image, ImageTk
 
 APP_NAME = "Eclipse Downloader"
-APP_VERSION = "4.0.0"
+APP_VERSION = "4.0.1"
 RELEASE_API = "https://api.github.com/repos/insspombal21-debug/eclipse-downloader/releases/latest"
 HEIGHTS = {"Melhor disponível": None, "2160p (4K)": 2160, "1440p": 1440, "1080p": 1080, "720p": 720, "480p": 480, "360p": 360}
 
@@ -32,7 +32,7 @@ class App(tk.Tk):
         out=ttk.Frame(self,padding=22); out.pack(fill="both",expand=True)
         title_row=ttk.Frame(out); title_row.pack(fill="x"); ttk.Label(title_row,text=f"{APP_NAME}  v{APP_VERSION}",style="Title.TLabel").pack(side="left")
         self.update_btn=ttk.Button(title_row,text="Verificar atualizações",command=self._check_updates); self.update_btn.pack(side="right")
-        ttk.Label(out,text="Fila para conteúdos próprios ou autorizados",style="Muted.TLabel").pack(anchor="w",pady=(2,14))
+        ttk.Label(out,text="Fila para conteúdos próprios ou autorizados • Atualizações automáticas ativadas",style="Muted.TLabel").pack(anchor="w",pady=(2,14))
         top=ttk.Frame(out,style="Card.TFrame",padding=16); top.pack(fill="x"); row=ttk.Frame(top,style="Card.TFrame"); row.pack(fill="x")
         self.urls=tk.Text(row,height=2,bg="#0f131b",fg="white",insertbackground="white",relief="flat",font=("Segoe UI",11),padx=10,pady=9); self.urls.pack(side="left",fill="x",expand=True)
         ttk.Button(row,text="COLAR",command=self._paste).pack(side="left",padx=(8,0)); ttk.Button(row,text="ADICIONAR À FILA",style="Accent.TButton",command=self._add).pack(side="left",padx=(8,0))
