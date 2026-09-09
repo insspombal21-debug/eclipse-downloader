@@ -1,3 +1,3 @@
-yt-dlp
-imageio-ffmpeg
-pyinstaller
+yt-dlp>=2026.8.27
+imageio-ffmpeg>=0.6.0
+Pillow>=10.0.0
