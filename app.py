@@ -5,9 +5,10 @@ import imageio_ffmpeg, yt_dlp
 from PIL import Image, ImageDraw, ImageTk
 
 APP_NAME = "Eclipse Flow"
-APP_VERSION = "5.2.0"
+APP_VERSION = "5.3.0"
 RELEASE_API = "https://api.github.com/repos/insspombal21-debug/eclipse-downloader/releases/latest"
 HEIGHTS = {"Melhor disponível": None, "2160p (4K)": 2160, "1440p": 1440, "1080p": 1080, "720p": 720, "480p": 480, "360p": 360}
+AUDIO_BITRATES = {"320 kbps": 320, "256 kbps": 256, "192 kbps": 192, "128 kbps": 128}
 SPEEDS = {"Sem limite": None, "500 KB/s": 500*1024, "1 MB/s": 1024**2, "2 MB/s": 2*1024**2, "5 MB/s": 5*1024**2, "10 MB/s": 10*1024**2}
 
 class App(tk.Tk):
@@ -51,8 +52,8 @@ class App(tk.Tk):
         self.urls=tk.Text(row,height=2,bg="#0d1020",fg="white",insertbackground="#ec4899",relief="flat",font=("Segoe UI",11),padx=10,pady=9); self.urls.pack(side="left",fill="x",expand=True)
         ttk.Button(row,text="COLAR",command=self._paste).pack(side="left",padx=(8,0)); ttk.Button(row,text="ADICIONAR À FILA",style="Accent.TButton",command=self._add).pack(side="left",padx=(8,0))
         cfg=ttk.Frame(top,style="Card.TFrame"); cfg.pack(fill="x",pady=(12,0)); ttk.Label(cfg,text="Formato:",style="Card.TLabel").pack(side="left")
-        ttk.Combobox(cfg,textvariable=self.mode,state="readonly",width=15,values=["Vídeo MP4","Áudio MP3"]).pack(side="left",padx=(6,16)); ttk.Label(cfg,text="Qualidade:",style="Card.TLabel").pack(side="left")
-        ttk.Combobox(cfg,textvariable=self.quality,state="readonly",width=18,values=list(HEIGHTS)).pack(side="left",padx=(6,16)); ttk.Label(cfg,text="Velocidade:",style="Card.TLabel").pack(side="left")
+        self.mode_box=ttk.Combobox(cfg,textvariable=self.mode,state="readonly",width=15,values=["Vídeo MP4","Áudio MP3"]);self.mode_box.pack(side="left",padx=(6,16));self.mode_box.bind("<<ComboboxSelected>>",self._mode_changed);ttk.Label(cfg,text="Qualidade:",style="Card.TLabel").pack(side="left")
+        self.quality_box=ttk.Combobox(cfg,textvariable=self.quality,state="readonly",width=18,values=list(HEIGHTS));self.quality_box.pack(side="left",padx=(6,16));ttk.Label(cfg,text="Velocidade:",style="Card.TLabel").pack(side="left")
         ttk.Combobox(cfg,textvariable=self.speed,state="readonly",width=12,values=list(SPEEDS)).pack(side="left",padx=(6,12)); ttk.Label(cfg,text="✓ Playlists detectadas automaticamente",style="Card.TLabel").pack(side="right")
         dest=ttk.Frame(top,style="Card.TFrame");dest.pack(fill="x",pady=(10,0));ttk.Label(dest,text="Salvar em:",style="Card.TLabel").pack(side="left");ttk.Label(dest,textvariable=self.folder,style="Card.TLabel").pack(side="left",padx=8);ttk.Button(dest,text="Escolher pasta",command=self._choose).pack(side="right")
         card=ttk.Frame(out,style="Card.TFrame",padding=12); card.pack(fill="both",expand=True,pady=(14,0)); ttk.Label(card,text="FILA DE DOWNLOADS",style="Card.TLabel",font=("Segoe UI Semibold",11)).pack(anchor="w",pady=(0,8))
@@ -71,7 +72,7 @@ class App(tk.Tk):
 
     def _sel(self):
         x=self.list.selection(); return x[0] if x else None
-    def _profile(self,t): return "MP3" if t["mode"]=="Áudio MP3" else t["quality"]
+    def _profile(self,t): return f"MP3 {t['quality']}" if t["mode"]=="Áudio MP3" else t["quality"]
     def _human(self,n):
         if not n:return "—"
         n=float(n)
@@ -89,6 +90,15 @@ class App(tk.Tk):
             if vs:
                 v=max(vs,key=lambda f:((f.get("height") or 0),self._fsize(f,d),f.get("tbr") or 0)); result[h]=self._fsize(v,d)+(az if v.get("acodec")=="none" else 0)
         return result,az
+    def _estimate_size(self,info,t):
+        sizes,audio=self._sizes(info)
+        if t["mode"]=="Áudio MP3":
+            duration=info.get("duration") or 0;bitrate=AUDIO_BITRATES.get(t["quality"],192)
+            return int(duration*bitrate*1000/8) if duration else audio
+        height=HEIGHTS.get(t["quality"]);return sizes.get(height) if height else max(sizes.values(),default=0)
+    def _mode_changed(self,_event=None):
+        audio=self.mode.get()=="Áudio MP3";values=list(AUDIO_BITRATES if audio else HEIGHTS);self.quality_box.configure(values=values)
+        if self.quality.get() not in values:self.quality.set("192 kbps" if audio else "1080p")
     def _safe_folder(self,name):
         clean=re.sub(r'[<>:"/\\|?*\x00-\x1f]',"_",name or "Playlist").strip(" .")[:150] or "Playlist"
         if clean.upper().split(".")[0] in {"CON","PRN","AUX","NUL",*(f"COM{x}" for x in range(1,10)),*(f"LPT{x}" for x in range(1,10))}:clean="_"+clean
@@ -111,7 +121,7 @@ class App(tk.Tk):
             entries=[e for e in (info.get("entries") or []) if e]
             if entries:
                 self.events.put(("playlist_select",i,info.get("title") or info.get("playlist_title") or "Playlist",entries));return
-            show=info;sizes,audio=self._sizes(show);h=HEIGHTS.get(t["quality"]);size=audio if t["mode"]=="Áudio MP3" else (sizes.get(h) if h else max(sizes.values(),default=0))
+            show=info;size=self._estimate_size(show,t)
             thumb=None
             try:
                 req=urllib.request.Request(show.get("thumbnail"),headers={"User-Agent":"Mozilla/5.0"});thumb=urllib.request.urlopen(req,timeout=12).read(2_000_000)
@@ -150,7 +160,7 @@ class App(tk.Tk):
         for pos in chosen:
             entry=entries[pos];video_id=entry.get("id");url=entry.get("webpage_url") or (f"https://www.youtube.com/watch?v={video_id}" if video_id else entry.get("url"))
             if not url:continue
-            sizes,audio=self._sizes(entry);h=HEIGHTS.get(parent["quality"]);size=audio if parent["mode"]=="Áudio MP3" else (sizes.get(h) if h else max(sizes.values(),default=0));item_id=uuid.uuid4().hex
+            size=self._estimate_size(entry,parent);item_id=uuid.uuid4().hex
             t={**parent,"id":item_id,"url":url,"title":entry.get("title") or "Vídeo sem título","output_folder":output_folder,"is_playlist":False,"is_playlist_item":True,"playlist_title":title,"playlist_index":entry.get("playlist_index") or pos+1,"analyzed":False,"status":"Na fila","size":size,"progress":"0%","file":None,"pause":False,"cancel":False,"remove":False}
             t["status"]="Analisando";self.tasks[item_id]=t;self.list.insert("","end",iid=item_id,values=(t["title"],self._profile(t),self._human(size),"0%","Analisando"));self.analysis.put(item_id);added+=1
         self.status.set(f"{added} vídeo(s) da playlist adicionado(s)")
@@ -161,7 +171,7 @@ class App(tk.Tk):
             if not t or t["status"]!="Analisando":continue
             try:
                 with yt_dlp.YoutubeDL({"quiet":True,"no_warnings":True,"noplaylist":True}) as y:info=y.extract_info(t["url"],download=False)
-                sizes,audio=self._sizes(info);h=HEIGHTS.get(t["quality"]);size=audio if t["mode"]=="Áudio MP3" else (sizes.get(h) if h else max(sizes.values(),default=0))
+                size=self._estimate_size(info,t)
                 self.events.put(("item_ready",i,info.get("title") or t["title"],size,info.get("thumbnail")))
             except Exception as e:self.events.put(("fail",i,str(e)))
 
@@ -193,7 +203,7 @@ class App(tk.Tk):
             prefix=f"{int(t.get('playlist_index') or 0):03d} - " if t.get("is_playlist_item") else ("%(playlist_index)03d - " if t.get("is_playlist") else "")
             opts={"outtmpl":str(output_folder/(prefix+"%(title)s [%(id)s].%(ext)s")),"noplaylist":not t["playlist"],"windowsfilenames":True,"progress_hooks":[hook],"ffmpeg_location":imageio_ffmpeg.get_ffmpeg_exe(),"quiet":True,"no_warnings":True,"continuedl":True}
             if SPEEDS.get(t.get("speed")):opts["ratelimit"]=SPEEDS[t["speed"]]
-            if t["mode"]=="Áudio MP3":opts.update({"format":"bestaudio/best","postprocessors":[{"key":"FFmpegExtractAudio","preferredcodec":"mp3","preferredquality":"192"}]})
+            if t["mode"]=="Áudio MP3":opts.update({"format":"bestaudio/best","postprocessors":[{"key":"FFmpegExtractAudio","preferredcodec":"mp3","preferredquality":str(AUDIO_BITRATES.get(t["quality"],192))}]})
             else:
                 h=HEIGHTS.get(t["quality"]);opts["format"]=f"bv*[height<={h}]+ba/b[height<={h}]" if h else "bv*+ba/b";opts["merge_output_format"]="mp4"
             started=time.time()
