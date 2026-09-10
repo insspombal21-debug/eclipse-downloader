@@ -5,7 +5,7 @@ import imageio_ffmpeg, yt_dlp
 from PIL import Image, ImageDraw, ImageTk
 
 APP_NAME = "Eclipse Flow"
-APP_VERSION = "5.0.0"
+APP_VERSION = "5.1.0"
 RELEASE_API = "https://api.github.com/repos/insspombal21-debug/eclipse-downloader/releases/latest"
 HEIGHTS = {"Melhor disponível": None, "2160p (4K)": 2160, "1440p": 1440, "1080p": 1080, "720p": 720, "480p": 480, "360p": 360}
 
@@ -92,19 +92,22 @@ class App(tk.Tk):
         found=[u.rstrip(",;)") for u in re.findall(r"https?://[^\s]+",self.urls.get("1.0","end")) if re.match(r"^https?://([\w-]+\.)?(youtube\.com|youtu\.be)/",u,re.I)]
         if not found: messagebox.showwarning(APP_NAME,"Cole pelo menos um link válido do YouTube.");return
         for url in found:
-            i=uuid.uuid4().hex;t={"id":i,"url":url,"title":"Analisando link...","mode":self.mode.get(),"quality":self.quality.get(),"folder":self.folder.get(),"playlist":self.playlist.get(),"status":"Analisando","size":0,"progress":"0%","file":None,"pause":False,"cancel":False,"remove":False}
+            i=uuid.uuid4().hex;t={"id":i,"url":url,"title":"Analisando link...","mode":self.mode.get(),"quality":self.quality.get(),"folder":self.folder.get(),"output_folder":self.folder.get(),"playlist":self.playlist.get(),"is_playlist":False,"playlist_title":None,"status":"Analisando","size":0,"progress":"0%","file":None,"pause":False,"cancel":False,"remove":False}
             self.tasks[i]=t;self.list.insert("","end",iid=i,values=(t["title"],self._profile(t),"—","0%","Analisando"));threading.Thread(target=self._analyze,args=(i,),daemon=True).start()
         self.urls.delete("1.0","end");self.status.set(f"{len(found)} item(ns) adicionado(s)")
     def _analyze(self,i):
         t=self.tasks.get(i)
         try:
             with yt_dlp.YoutubeDL({"quiet":True,"no_warnings":True,"noplaylist":not t["playlist"]}) as y: info=y.extract_info(t["url"],download=False)
-            show=next((e for e in info.get("entries",[]) if e),info);sizes,audio=self._sizes(show);h=HEIGHTS.get(t["quality"]);size=audio if t["mode"]=="Áudio MP3" else (sizes.get(h) if h else max(sizes.values(),default=0))
+            entries=[e for e in (info.get("entries") or []) if e];is_playlist=bool(t["playlist"] and entries);show=entries[0] if entries else info
+            playlist_title=(info.get("title") or info.get("playlist_title") or "Playlist") if is_playlist else None
+            sizes,audio=self._sizes(show);h=HEIGHTS.get(t["quality"]);size=audio if t["mode"]=="Áudio MP3" else (sizes.get(h) if h else max(sizes.values(),default=0))
             thumb=None
             try:
                 req=urllib.request.Request(show.get("thumbnail"),headers={"User-Agent":"Mozilla/5.0"});thumb=urllib.request.urlopen(req,timeout=12).read(2_000_000)
             except Exception:pass
-            self.events.put(("ready",i,show.get("title") or info.get("title") or "Conteúdo encontrado",size,thumb))
+            title=f"Playlist: {playlist_title} ({len(entries)} itens)" if is_playlist else (show.get("title") or info.get("title") or "Conteúdo encontrado")
+            self.events.put(("ready",i,title,size,thumb,is_playlist,playlist_title))
         except Exception as e:self.events.put(("fail",i,str(e)))
 
     def _worker(self):
@@ -122,13 +125,20 @@ class App(tk.Tk):
                 got=sum(done.values());full=max(sum(totals.values()),t.get("size") or 0);pct=min(100,got*100/full) if full else 0
                 t["progress"]=f"{pct:.1f}%  {self._human(got)}/{self._human(full)}";t["status"]=(d.get("_speed_str","").strip()+"  "+d.get("_eta_str","").strip()).strip() or "Baixando";self.events.put(("update",t["id"]))
         try:
-            folder=Path(t["folder"]);folder.mkdir(parents=True,exist_ok=True);opts={"outtmpl":str(folder/"%(title)s [%(id)s].%(ext)s"),"noplaylist":not t["playlist"],"windowsfilenames":True,"progress_hooks":[hook],"ffmpeg_location":imageio_ffmpeg.get_ffmpeg_exe(),"quiet":True,"no_warnings":True,"continuedl":True}
+            folder=Path(t["folder"]);folder.mkdir(parents=True,exist_ok=True)
+            if t.get("is_playlist"):
+                safe_name=re.sub(r'[<>:"/\\|?*\x00-\x1f]',"_",t.get("playlist_title") or "Playlist").strip(" .")[:150] or "Playlist"
+                output_folder=folder/safe_name
+            else:output_folder=folder
+            output_folder.mkdir(parents=True,exist_ok=True);t["output_folder"]=str(output_folder)
+            prefix="%(playlist_index)03d - " if t.get("is_playlist") else ""
+            opts={"outtmpl":str(output_folder/(prefix+"%(title)s [%(id)s].%(ext)s")),"noplaylist":not t["playlist"],"windowsfilenames":True,"progress_hooks":[hook],"ffmpeg_location":imageio_ffmpeg.get_ffmpeg_exe(),"quiet":True,"no_warnings":True,"continuedl":True}
             if t["mode"]=="Áudio MP3":opts.update({"format":"bestaudio/best","postprocessors":[{"key":"FFmpegExtractAudio","preferredcodec":"mp3","preferredquality":"192"}]})
             else:
                 h=HEIGHTS.get(t["quality"]);opts["format"]=f"bv*[height<={h}]+ba/b[height<={h}]" if h else "bv*+ba/b";opts["merge_output_format"]="mp4"
             started=time.time()
             with yt_dlp.YoutubeDL(opts) as y:y.download([t["url"]])
-            matches=[p for p in folder.iterdir() if p.is_file() and p.stat().st_mtime>=started-3 and p.suffix.lower() not in (".part",".ytdl")]
+            matches=[p for p in output_folder.rglob("*") if p.is_file() and p.stat().st_mtime>=started-3 and p.suffix.lower() not in (".part",".ytdl")]
             t["file"]=str(max(matches,key=lambda p:p.stat().st_mtime)) if matches else None;t["progress"]="100%";t["status"]="Concluído"
         except yt_dlp.utils.DownloadCancelled:t["status"]="Pausado" if t["pause"] else "Cancelado"
         except Exception as e:t["status"]="Erro";t["error"]=str(e)
@@ -143,7 +153,7 @@ class App(tk.Tk):
             while True:
                 e=self.events.get_nowait();kind,i=e[0],e[1];t=self.tasks.get(i)
                 if kind=="ready" and t:
-                    t.update(title=e[2],size=e[3],status="Na fila")
+                    t.update(title=e[2],size=e[3],status="Na fila",is_playlist=e[5],playlist_title=e[6])
                     if e[4]:
                         try:im=Image.open(io.BytesIO(e[4])).convert("RGB");im.thumbnail((112,63));ph=ImageTk.PhotoImage(im);self.images[i]=ph;self.list.item(i,image=ph)
                         except Exception:pass
@@ -191,7 +201,7 @@ class App(tk.Tk):
         if not p or not p.exists():messagebox.showinfo(APP_NAME,"Esse item ainda não possui um arquivo concluído.");return
         subprocess.Popen(["explorer","/select,",str(p)])
     def _open_folder(self):
-        t=self.tasks.get(self._sel());p=Path(t["folder"] if t else self.folder.get());p.mkdir(parents=True,exist_ok=True);os.startfile(p)
+        t=self.tasks.get(self._sel());p=Path(t.get("output_folder",t["folder"]) if t else self.folder.get());p.mkdir(parents=True,exist_ok=True);os.startfile(p)
     def _delete_file(self):
         t=self.tasks.get(self._sel());p=Path(t["file"]) if t and t.get("file") else None
         if not p or not p.exists():messagebox.showinfo(APP_NAME,"O arquivo não foi encontrado.");return
@@ -242,8 +252,8 @@ class App(tk.Tk):
             new_exe=tmp/"new"/"Eclipse Downloader.exe";current=Path(sys.executable).resolve()
             if not new_exe.exists():raise FileNotFoundError("O executável não foi encontrado no pacote.")
             if current.suffix.lower()!=".exe":raise RuntimeError("A atualização automática funciona apenas no aplicativo portátil.")
-            script=tmp/"atualizar.bat";pid=os.getpid()
-            script.write_text(f'@echo off\r\n:wait\r\ntasklist /FI "PID eq {pid}" | find "{pid}" >nul\r\nif not errorlevel 1 (timeout /t 1 /nobreak >nul & goto wait)\r\ncopy /Y "{new_exe}" "{current}" >nul\r\nstart "" "{current}"\r\ndel "%~f0"\r\n',encoding="ascii")
+            script=tmp/"atualizar.bat";pid=os.getpid();parent_pid=os.getppid()
+            script.write_text(f'@echo off\r\n:wait_child\r\ntasklist /FI "PID eq {pid}" | find "{pid}" >nul\r\nif not errorlevel 1 (timeout /t 1 /nobreak >nul & goto wait_child)\r\n:wait_parent\r\ntasklist /FI "PID eq {parent_pid}" | find "{parent_pid}" >nul\r\nif not errorlevel 1 (timeout /t 1 /nobreak >nul & goto wait_parent)\r\ntimeout /t 2 /nobreak >nul\r\ncopy /Y "{new_exe}" "{current}" >nul\r\nset PYINSTALLER_RESET_ENVIRONMENT=1\r\nstart "" "{current}"\r\ndel "%~f0"\r\n',encoding="ascii")
             subprocess.Popen(["cmd","/c",str(script)],creationflags=0x08000000);self.after(200,self.destroy)
         except Exception as exc:self.events.put(("update_error",str(exc)))
 
