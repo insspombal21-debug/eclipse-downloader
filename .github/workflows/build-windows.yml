@@ -28,7 +28,12 @@ jobs:
           python -m PyInstaller --noconfirm --clean --onefile --windowed
           --name "Eclipse Downloader" --icon app.ico --collect-all yt_dlp
           --collect-all imageio_ffmpeg --collect-all PIL app.py
-      - name: Criar pacote e checksum
+      - name: Instalar gerador do instalador
+        run: choco install innosetup --no-progress -y
+      - name: Gerar instalador
+        shell: pwsh
+        run: '& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer.iss'
+      - name: Criar pacotes e checksums
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path portable
@@ -36,12 +41,15 @@ jobs:
           "Eclipse Flow portatil. Extraia e abra o arquivo EXE." | Set-Content -Encoding UTF8 "portable/LEIA-ME.txt"
           Compress-Archive -Path portable/* -DestinationPath EclipseDownloader-Portatil-Windows.zip
           (Get-FileHash EclipseDownloader-Portatil-Windows.zip -Algorithm SHA256).Hash.ToLower() + "  EclipseDownloader-Portatil-Windows.zip" | Set-Content -Encoding ascii EclipseDownloader-Portatil-Windows.zip.sha256
+          (Get-FileHash EclipseFlow-Instalador-Windows.exe -Algorithm SHA256).Hash.ToLower() + "  EclipseFlow-Instalador-Windows.exe" | Set-Content -Encoding ascii EclipseFlow-Instalador-Windows.exe.sha256
       - uses: actions/upload-artifact@v4
         with:
           name: EclipseDownloader-Portatil-Windows
           path: |
             EclipseDownloader-Portatil-Windows.zip
             EclipseDownloader-Portatil-Windows.zip.sha256
+            EclipseFlow-Instalador-Windows.exe
+            EclipseFlow-Instalador-Windows.exe.sha256
       - name: Ler versao
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         id: version
@@ -59,7 +67,7 @@ jobs:
           $tag = "v${{ steps.version.outputs.version }}"
           gh release view $tag 2>$null
           if ($LASTEXITCODE -eq 0) {
-            gh release upload $tag EclipseDownloader-Portatil-Windows.zip EclipseDownloader-Portatil-Windows.zip.sha256 --clobber
+            gh release upload $tag EclipseDownloader-Portatil-Windows.zip EclipseDownloader-Portatil-Windows.zip.sha256 EclipseFlow-Instalador-Windows.exe EclipseFlow-Instalador-Windows.exe.sha256 --clobber
           } else {
-            gh release create $tag EclipseDownloader-Portatil-Windows.zip EclipseDownloader-Portatil-Windows.zip.sha256 --title "Eclipse Flow $tag" --notes "Nova identidade visual Eclipse Flow. Versao portatil para Windows." --latest
+            gh release create $tag EclipseDownloader-Portatil-Windows.zip EclipseDownloader-Portatil-Windows.zip.sha256 EclipseFlow-Instalador-Windows.exe EclipseFlow-Instalador-Windows.exe.sha256 --title "Eclipse Flow $tag" --notes "Instalador recomendado para Windows e versao portatil. Configuracoes persistentes, progresso geral de playlists, downloads simultaneos e aviso ao concluir." --latest
           }
