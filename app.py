@@ -7,11 +7,17 @@ try:import winsound
 except ImportError:winsound=None
 
 APP_NAME = "Eclipse Flow"
-APP_VERSION = "5.5.0"
+APP_VERSION = "6.0.0"
 RELEASE_API = "https://api.github.com/repos/insspombal21-debug/eclipse-downloader/releases/latest"
 HEIGHTS = {"Melhor disponível": None, "2160p (4K)": 2160, "1440p": 1440, "1080p": 1080, "720p": 720, "480p": 480, "360p": 360}
 AUDIO_BITRATES = {"320 kbps": 320, "256 kbps": 256, "192 kbps": 192, "128 kbps": 128}
 SPEEDS = {"Sem limite": None, "500 KB/s": 500*1024, "1 MB/s": 1024**2, "2 MB/s": 2*1024**2, "5 MB/s": 5*1024**2, "10 MB/s": 10*1024**2}
+CONVERT_FORMATS = ("MP3","WAV","AAC","FLAC","OGG","MP4","MKV","AVI","WEBM")
+CONVERT_AUDIO = {"MP3","WAV","AAC","FLAC","OGG"}
+CONVERT_AUDIO_QUALITY = ("320 kbps","256 kbps","192 kbps","128 kbps")
+CONVERT_VIDEO_QUALITY = ("Manter resolução","1080p","720p","480p","360p")
+MEDIA_EXTENSIONS = {".mp4",".mkv",".avi",".webm",".mov",".wmv",".m4v",".mpg",".mpeg",".mp3",".wav",".aac",".m4a",".flac",".ogg",".opus",".wma"}
+AUDIO_EXTENSIONS = {".mp3",".wav",".aac",".m4a",".flac",".ogg",".opus",".wma"}
 
 class App(tk.Tk):
     def __init__(self):
@@ -22,9 +28,15 @@ class App(tk.Tk):
         self.events, self.work, self.analysis = queue.Queue(), queue.Queue(), queue.Queue(); self.tasks, self.images = {}, {}; self.active=set();self.download_condition=threading.Condition();self.download_limit=int(concurrent);self.batch_active=False
         self.mode, self.quality = tk.StringVar(value=mode), tk.StringVar(value=quality)
         self.folder = tk.StringVar(value=saved.get("folder") or str(Path.home()/"Downloads")); self.speed = tk.StringVar(value=speed);self.concurrent=tk.StringVar(value=concurrent);self.clipboard_watch=tk.BooleanVar(value=bool(saved.get("clipboard_watch",False)));self.last_clipboard="";self.status = tk.StringVar(value="Cole links para começar");self.playlist_status=tk.StringVar(value="")
+        convert_format=saved.get("convert_format") if saved.get("convert_format") in CONVERT_FORMATS else "MP3";convert_quality=saved.get("convert_quality") or "192 kbps"
+        valid_convert_quality=("Sem perda",) if convert_format in ("WAV","FLAC") else (CONVERT_AUDIO_QUALITY if convert_format in CONVERT_AUDIO else CONVERT_VIDEO_QUALITY)
+        if convert_quality not in valid_convert_quality:convert_quality="Sem perda" if convert_format in ("WAV","FLAC") else ("192 kbps" if convert_format in CONVERT_AUDIO else "Manter resolução")
+        self.convert_format=tk.StringVar(value=convert_format);self.convert_quality=tk.StringVar(value=convert_quality);self.convert_folder=tk.StringVar(value=saved.get("convert_folder") or str(Path.home()/"Downloads"/"Eclipse Flow Convertidos"));self.convert_status=tk.StringVar(value="Adicione arquivos para converter")
+        self.convert_tasks={};self.convert_queue=queue.Queue();self.convert_active=None;self.convert_process=None
         self.update_url = self.checksum_url = None
         self._style(); self._ui(); self.after(100, self._poll); threading.Thread(target=self._worker, daemon=True).start()
         for _ in range(2):threading.Thread(target=self._analysis_worker,daemon=True).start()
+        threading.Thread(target=self._convert_worker,daemon=True).start()
         self.protocol("WM_DELETE_WINDOW",self._close);self.after(1200,self._watch_clipboard);self.after(1800, self._check_updates)
 
     def _load_settings(self):
@@ -32,10 +44,15 @@ class App(tk.Tk):
         except (OSError,ValueError):return {}
     def _save_settings(self):
         try:
-            data={"mode":self.mode.get(),"quality":self.quality.get(),"speed":self.speed.get(),"concurrent":self.concurrent.get(),"folder":self.folder.get(),"clipboard_watch":self.clipboard_watch.get()};self.settings_file.parent.mkdir(parents=True,exist_ok=True)
+            data={"mode":self.mode.get(),"quality":self.quality.get(),"speed":self.speed.get(),"concurrent":self.concurrent.get(),"folder":self.folder.get(),"clipboard_watch":self.clipboard_watch.get(),"convert_format":self.convert_format.get(),"convert_quality":self.convert_quality.get(),"convert_folder":self.convert_folder.get()};self.settings_file.parent.mkdir(parents=True,exist_ok=True)
             temp=self.settings_file.with_suffix(".tmp");temp.write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding="utf-8");temp.replace(self.settings_file)
         except OSError:pass
-    def _close(self):self._save_settings();self.destroy()
+    def _close(self):
+        self._save_settings()
+        if self.convert_process:
+            try:self.convert_process.terminate()
+            except OSError:pass
+        self.destroy()
     def _concurrency_changed(self,_event=None):
         self.download_limit=int(self.concurrent.get())
         with self.download_condition:self.download_condition.notify_all()
@@ -56,6 +73,7 @@ class App(tk.Tk):
         s.configure("Title.TLabel",font=("Segoe UI Semibold",25),foreground="white"); s.configure("Muted.TLabel",foreground="#aaa6c3")
         s.configure("TButton",font=("Segoe UI Semibold",10),padding=9,background="#24213d",foreground="#f4f2ff"); s.configure("Accent.TButton",background="#ec4899",foreground="white",borderwidth=0)
         s.map("Accent.TButton",background=[("active","#f472b6")]); s.configure("TEntry",fieldbackground="#0d1020",foreground="white",padding=8)
+        s.configure("Tab.TButton",font=("Segoe UI Semibold",11),padding=(18,10),background="#17152b",foreground="#aaa6c3",borderwidth=0);s.configure("ActiveTab.TButton",font=("Segoe UI Semibold",11),padding=(18,10),background="#7c3aed",foreground="white",borderwidth=0)
         s.configure("TCombobox",fieldbackground="#0d1020",foreground="#111827",padding=7); s.configure("TCheckbutton",background="#17152b",foreground="#f4f2ff")
         s.configure("Queue.Treeview",background="#17152b",foreground="#f4f2ff",fieldbackground="#17152b",rowheight=72,borderwidth=0,font=("Segoe UI",10))
         s.configure("Queue.Treeview.Heading",background="#282444",foreground="#f4f2ff",font=("Segoe UI Semibold",10)); s.map("Queue.Treeview",background=[("selected","#3b3262")])
@@ -67,6 +85,9 @@ class App(tk.Tk):
         ttk.Label(title_row,text=f"{APP_NAME}  v{APP_VERSION}",style="Title.TLabel").pack(side="left")
         self.update_btn=ttk.Button(title_row,text="Verificar atualizações",command=self._check_updates); self.update_btn.pack(side="right")
         ttk.Label(out,text="Seus downloads em movimento  •  Atualizações automáticas ativadas",style="Muted.TLabel").pack(anchor="w",padx=(67,0),pady=(0,14))
+        tabbar=ttk.Frame(out);tabbar.pack(fill="x",pady=(0,10));self.download_tab_btn=ttk.Button(tabbar,text="↓  Baixar",style="ActiveTab.TButton",command=lambda:self._switch_tab("download"));self.download_tab_btn.pack(side="left",padx=(0,7));self.convert_tab_btn=ttk.Button(tabbar,text="⇄  Converter",style="Tab.TButton",command=lambda:self._switch_tab("convert"));self.convert_tab_btn.pack(side="left")
+        self.page_host=ttk.Frame(out);self.page_host.pack(fill="both",expand=True);self.download_page=ttk.Frame(self.page_host);self.convert_page=ttk.Frame(self.page_host)
+        out=self.download_page
         top=ttk.Frame(out,style="Card.TFrame",padding=16); top.pack(fill="x"); row=ttk.Frame(top,style="Card.TFrame"); row.pack(fill="x")
         self.urls=tk.Text(row,height=2,bg="#0d1020",fg="white",insertbackground="#ec4899",relief="flat",font=("Segoe UI",11),padx=10,pady=9); self.urls.pack(side="left",fill="x",expand=True)
         ttk.Button(row,text="COLAR",command=self._paste).pack(side="left",padx=(8,0)); ttk.Button(row,text="ADICIONAR À FILA",style="Accent.TButton",command=self._add).pack(side="left",padx=(8,0))
@@ -88,6 +109,150 @@ class App(tk.Tk):
         ttk.Label(out,textvariable=self.status,style="Muted.TLabel").pack(anchor="e",pady=(5,0))
         self.menu=tk.Menu(self,tearoff=False); self.menu.add_command(label="Mostrar arquivo na pasta",command=self._show); self.menu.add_command(label="Abrir pasta de destino",command=self._open_folder)
         self.menu.add_command(label="Baixar novamente",command=self._retry);self.menu.add_command(label="Detalhes do erro",command=self._show_error); self.menu.add_separator(); self.menu.add_command(label="Remover da fila",command=self._remove); self.menu.add_command(label="Excluir arquivo do computador",command=self._delete_file)
+        self._converter_ui(self.convert_page);self._convert_format_changed();self._switch_tab("download")
+
+    def _switch_tab(self,name):
+        self.download_page.pack_forget();self.convert_page.pack_forget()
+        if name=="convert":
+            self.convert_page.pack(fill="both",expand=True);self.download_tab_btn.configure(style="Tab.TButton");self.convert_tab_btn.configure(style="ActiveTab.TButton")
+        else:
+            self.download_page.pack(fill="both",expand=True);self.download_tab_btn.configure(style="ActiveTab.TButton");self.convert_tab_btn.configure(style="Tab.TButton")
+
+    def _converter_ui(self,out):
+        top=ttk.Frame(out,style="Card.TFrame",padding=16);top.pack(fill="x")
+        ttk.Label(top,text="Conversor multiformato",style="Card.TLabel",font=("Segoe UI Semibold",16)).pack(anchor="w")
+        ttk.Label(top,text="Converta vídeos e áudios que já estão no computador — sem instalar componentes adicionais.",style="Card.TLabel",foreground="#aaa6c3").pack(anchor="w",pady=(2,12))
+        buttons=ttk.Frame(top,style="Card.TFrame");buttons.pack(fill="x");ttk.Button(buttons,text="+ Adicionar arquivos",command=self._convert_add_files).pack(side="left",padx=(0,7));ttk.Button(buttons,text="+ Adicionar pasta",command=self._convert_add_folder).pack(side="left")
+        profile=ttk.Frame(top,style="Card.TFrame");profile.pack(fill="x",pady=(12,0));ttk.Label(profile,text="Formato de saída:",style="Card.TLabel").pack(side="left");self.convert_format_box=ttk.Combobox(profile,textvariable=self.convert_format,state="readonly",width=10,values=CONVERT_FORMATS);self.convert_format_box.pack(side="left",padx=(6,16));self.convert_format_box.bind("<<ComboboxSelected>>",self._convert_format_changed);ttk.Label(profile,text="Qualidade:",style="Card.TLabel").pack(side="left");self.convert_quality_box=ttk.Combobox(profile,textvariable=self.convert_quality,state="readonly",width=18,values=CONVERT_AUDIO_QUALITY);self.convert_quality_box.pack(side="left",padx=(6,16));self.convert_quality_box.bind("<<ComboboxSelected>>",lambda _e:self._save_settings());ttk.Button(profile,text="CONVERTER",style="Accent.TButton",command=self._convert_start).pack(side="right")
+        dest=ttk.Frame(top,style="Card.TFrame");dest.pack(fill="x",pady=(10,0));ttk.Label(dest,text="Salvar em:",style="Card.TLabel").pack(side="left");ttk.Label(dest,textvariable=self.convert_folder,style="Card.TLabel").pack(side="left",padx=8);ttk.Button(dest,text="Escolher pasta",command=self._convert_choose_folder).pack(side="right")
+        card=ttk.Frame(out,style="Card.TFrame",padding=12);card.pack(fill="both",expand=True,pady=(14,0));ttk.Label(card,text="FILA DE CONVERSÕES",style="Card.TLabel",font=("Segoe UI Semibold",11)).pack(anchor="w",pady=(0,8))
+        cols=("source","target","size","progress","status");self.convert_list=ttk.Treeview(card,columns=cols,show="headings",style="Queue.Treeview",selectmode="browse")
+        for col,title in zip(cols,("Arquivo","Conversão","Tamanho","Progresso","Status")):self.convert_list.heading(col,text=title)
+        self.convert_list.column("source",width=390);self.convert_list.column("target",width=120,anchor="center");self.convert_list.column("size",width=105,anchor="center");self.convert_list.column("progress",width=160,anchor="center");self.convert_list.column("status",width=150,anchor="center")
+        bar=ttk.Scrollbar(card,orient="vertical",command=self.convert_list.yview);self.convert_list.configure(yscrollcommand=bar.set);bar.pack(side="right",fill="y");self.convert_list.pack(fill="both",expand=True);self.convert_list.bind("<Double-1>",lambda _e:self._convert_show())
+        acts=ttk.Frame(out);acts.pack(fill="x",pady=(12,0));ttk.Button(acts,text="Cancelar",command=self._convert_cancel).pack(side="left",padx=(0,7));ttk.Button(acts,text="Mostrar arquivo",command=self._convert_show).pack(side="left",padx=(0,7));ttk.Button(acts,text="Remover",command=self._convert_remove).pack(side="left",padx=(0,7));ttk.Button(acts,text="Limpar concluídos",command=self._convert_clear).pack(side="left");ttk.Label(acts,textvariable=self.convert_status,style="Muted.TLabel").pack(side="right")
+
+    def _convert_format_changed(self,_event=None):
+        fmt=self.convert_format.get();values=("Sem perda",) if fmt in ("WAV","FLAC") else (CONVERT_AUDIO_QUALITY if fmt in CONVERT_AUDIO else CONVERT_VIDEO_QUALITY)
+        self.convert_quality_box.configure(values=values)
+        if self.convert_quality.get() not in values:self.convert_quality.set("Sem perda" if fmt in ("WAV","FLAC") else ("192 kbps" if fmt in CONVERT_AUDIO else "Manter resolução"))
+        for t in self.convert_tasks.values():
+            if t["status"]=="Aguardando":t.update(format=fmt,quality=self.convert_quality.get());self._convert_row(t["id"])
+        self._save_settings()
+    def _convert_add_files(self):
+        paths=filedialog.askopenfilenames(title="Escolher vídeos ou áudios",filetypes=[("Vídeos e áudios","*.mp4 *.mkv *.avi *.webm *.mov *.wmv *.m4v *.mpg *.mpeg *.mp3 *.wav *.aac *.m4a *.flac *.ogg *.opus *.wma"),("Todos os arquivos","*.*")])
+        self._convert_add_paths(paths)
+    def _convert_add_folder(self):
+        folder=filedialog.askdirectory(title="Escolher pasta com vídeos ou áudios")
+        if folder:self._convert_add_paths(sorted(str(p) for p in Path(folder).rglob("*") if p.is_file() and p.suffix.lower() in MEDIA_EXTENSIONS))
+    def _convert_add_paths(self,paths):
+        added=0;existing={t["source"] for t in self.convert_tasks.values() if t["status"] not in ("Removido",)}
+        for raw in paths:
+            p=Path(raw)
+            if not p.is_file() or p.suffix.lower() not in MEDIA_EXTENSIONS or str(p) in existing:continue
+            i=uuid.uuid4().hex;t={"id":i,"source":str(p),"title":p.name,"format":self.convert_format.get(),"quality":self.convert_quality.get(),"size":p.stat().st_size,"progress":"0%","percent":0.0,"status":"Aguardando","output":None,"cancel":False,"error":None}
+            self.convert_tasks[i]=t;self.convert_list.insert("","end",iid=i,values=(p.name,f"{p.suffix.lstrip('.').upper()} → {t['format']}",self._human(t["size"]),"0%","Aguardando"));existing.add(str(p));added+=1
+        self.convert_status.set(f"{added} arquivo(s) adicionado(s)" if added else "Nenhum arquivo novo compatível encontrado")
+    def _convert_choose_folder(self):
+        p=filedialog.askdirectory(initialdir=self.convert_folder.get(),title="Pasta dos arquivos convertidos")
+        if p:self.convert_folder.set(p);self._save_settings()
+    def _convert_start(self):
+        pending=[t for t in self.convert_tasks.values() if t["status"]=="Aguardando"]
+        if not pending:messagebox.showinfo(APP_NAME,"Adicione arquivos antes de iniciar a conversão.");return
+        out=Path(self.convert_folder.get())
+        try:out.mkdir(parents=True,exist_ok=True)
+        except OSError as e:messagebox.showerror(APP_NAME,f"Não foi possível criar a pasta de destino:\n{e}");return
+        for t in pending:
+            t.update(format=self.convert_format.get(),quality=self.convert_quality.get(),folder=str(out),status="Na fila",cancel=False,error=None);self._convert_row(t["id"]);self.convert_queue.put(t["id"])
+        self._save_settings();self.convert_status.set(f"{len(pending)} conversão(ões) iniciada(s)")
+    def _convert_worker(self):
+        while True:
+            i=self.convert_queue.get();t=self.convert_tasks.get(i)
+            if not t or t["status"]!="Na fila":continue
+            self.convert_active=i;self._convert_one(t);self.convert_active=None;self.convert_process=None
+    @staticmethod
+    def _media_duration(ffmpeg,source):
+        flags=0x08000000 if os.name=="nt" else 0
+        try:r=subprocess.run([ffmpeg,"-hide_banner","-i",str(source)],capture_output=True,text=True,encoding="utf-8",errors="replace",timeout=30,creationflags=flags)
+        except (OSError,subprocess.SubprocessError):return 0.0
+        m=re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)",r.stderr or "")
+        return int(m.group(1))*3600+int(m.group(2))*60+float(m.group(3)) if m else 0.0
+    @staticmethod
+    def _convert_command(ffmpeg,source,target,fmt,quality):
+        cmd=[ffmpeg,"-y","-hide_banner","-loglevel","error","-i",str(source)];bitrate=(re.search(r"\d+",quality or "") or ["192"])[0]
+        if fmt in CONVERT_AUDIO:
+            cmd+=["-vn"]
+            if fmt=="MP3":cmd+=["-c:a","libmp3lame","-b:a",f"{bitrate}k"]
+            elif fmt=="WAV":cmd+=["-c:a","pcm_s16le"]
+            elif fmt=="AAC":cmd+=["-c:a","aac","-b:a",f"{bitrate}k"]
+            elif fmt=="FLAC":cmd+=["-c:a","flac"]
+            elif fmt=="OGG":cmd+=["-c:a","libvorbis","-b:a",f"{bitrate}k"]
+        else:
+            if quality!="Manter resolução":cmd+=["-vf",f"scale=-2:min({int(re.search(r'\d+',quality).group())}\\,ih)"]
+            if fmt in ("MP4","MKV"):cmd+=["-c:v","libx264","-preset","medium","-crf","23","-c:a","aac","-b:a","192k"]
+            elif fmt=="AVI":cmd+=["-c:v","mpeg4","-q:v","4","-c:a","libmp3lame","-b:a","192k"]
+            elif fmt=="WEBM":cmd+=["-c:v","libvpx-vp9","-crf","32","-b:v","0","-c:a","libopus","-b:a","128k"]
+            if fmt=="MP4":cmd+=["-movflags","+faststart"]
+        return cmd+["-progress","pipe:1","-nostats",str(target)]
+    @staticmethod
+    def _unique_output(folder,source,fmt):
+        base=Path(folder)/(Path(source).stem+"."+fmt.lower());candidate=base;n=2
+        while candidate.exists() or candidate.resolve()==Path(source).resolve():candidate=base.with_name(f"{base.stem} ({n}){base.suffix}");n+=1
+        return candidate
+    def _convert_one(self,t):
+        source=Path(t["source"]);target=self._unique_output(t["folder"],source,t["format"]);ffmpeg=imageio_ffmpeg.get_ffmpeg_exe();duration=self._media_duration(ffmpeg,source);t.update(status="Convertendo",progress="0%",percent=0.0,output=str(target));self.events.put(("convert_update",t["id"]))
+        if t["format"] not in CONVERT_AUDIO and source.suffix.lower() in AUDIO_EXTENSIONS:
+            t.update(status="Erro",error="Um arquivo somente de áudio não pode ser convertido para um formato de vídeo.");self.events.put(("convert_update",t["id"]));return
+        flags=0x08000000 if os.name=="nt" else 0;lines=[]
+        try:
+            self.convert_process=subprocess.Popen(self._convert_command(ffmpeg,source,target,t["format"],t["quality"]),stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,encoding="utf-8",errors="replace",creationflags=flags)
+            for raw in self.convert_process.stdout:
+                line=raw.strip();lines.append(line);lines=lines[-30:]
+                if line.startswith(("out_time_us=","out_time_ms=")) and duration:
+                    done=float(line.split("=",1)[1] or 0)/1_000_000;pct=min(99.9,done*100/duration);t["percent"]=pct;t["progress"]=f"{pct:.1f}%";self.events.put(("convert_update",t["id"]))
+            code=self.convert_process.wait()
+            if t["cancel"]:t["status"]="Cancelado"
+            elif code==0 and target.exists():t.update(status="Concluído",progress="100%",percent=100.0)
+            else:t.update(status="Erro",error="\n".join(x for x in lines if x)[-4000:] or f"O conversor encerrou com o código {code}.")
+        except Exception as e:t.update(status="Cancelado" if t["cancel"] else "Erro",error=str(e))
+        if t["status"] in ("Cancelado","Erro") and target.exists():
+            try:target.unlink()
+            except OSError:pass
+        self.events.put(("convert_update",t["id"]))
+    def _convert_row(self,i):
+        t=self.convert_tasks.get(i)
+        if t and self.convert_list.exists(i):self.convert_list.item(i,values=(t["title"],f"{Path(t['source']).suffix.lstrip('.').upper()} → {t['format']}",self._human(t["size"]),t["progress"],t["status"]))
+    def _convert_selected(self):
+        selected=self.convert_list.selection();return self.convert_tasks.get(selected[0]) if selected else None
+    def _convert_cancel(self):
+        t=self._convert_selected()
+        if not t:return
+        t["cancel"]=True
+        if t["id"]==self.convert_active and self.convert_process:
+            t["status"]="Cancelando..."
+            try:self.convert_process.terminate()
+            except OSError:pass
+        elif t["status"] in ("Aguardando","Na fila"):t["status"]="Cancelado"
+        self._convert_row(t["id"])
+    def _convert_show(self):
+        t=self._convert_selected();p=Path(t["output"]) if t and t.get("output") else None
+        if not p or not p.exists():
+            if t and t.get("error"):messagebox.showerror(APP_NAME,"Não foi possível converter:\n\n"+t["error"][-1500:])
+            else:messagebox.showinfo(APP_NAME,"Esse item ainda não possui um arquivo convertido.")
+            return
+        subprocess.Popen(["explorer","/select,",str(p)])
+    def _convert_remove(self):
+        t=self._convert_selected()
+        if not t:return
+        if t["id"]==self.convert_active:messagebox.showinfo(APP_NAME,"Cancele a conversão antes de remover este item.");return
+        if self.convert_list.exists(t["id"]):self.convert_list.delete(t["id"])
+        self.convert_tasks.pop(t["id"],None)
+    def _convert_clear(self):
+        ids=[i for i,t in self.convert_tasks.items() if t["status"] in ("Concluído","Cancelado")]
+        for i in ids:
+            if self.convert_list.exists(i):self.convert_list.delete(i)
+            self.convert_tasks.pop(i,None)
+        self.convert_status.set(f"{len(ids)} item(ns) removido(s) da fila")
 
     def _sel(self):
         x=self.list.selection(); return x[0] if x else None
@@ -300,7 +465,11 @@ class App(tk.Tk):
         try:
             while True:
                 e=self.events.get_nowait();kind,i=e[0],e[1];t=self.tasks.get(i)
-                if kind=="ready" and t:
+                if kind=="convert_update":
+                    self._convert_row(i);ct=self.convert_tasks.get(i)
+                    if ct and ct["status"]=="Concluído":self.convert_status.set(f"Concluído: {ct['title']}")
+                    elif ct and ct["status"]=="Erro":self.convert_status.set(f"Erro ao converter: {ct['title']}")
+                elif kind=="ready" and t:
                     t.update(title=e[2],size=e[3],status="Na fila",analyzed=True)
                     if e[4]:
                         try:im=Image.open(io.BytesIO(e[4])).convert("RGB");im.thumbnail((112,63));ph=ImageTk.PhotoImage(im);self.images[i]=ph;self.list.item(i,image=ph)
