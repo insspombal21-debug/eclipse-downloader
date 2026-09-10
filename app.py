@@ -5,18 +5,21 @@ import imageio_ffmpeg, yt_dlp
 from PIL import Image, ImageDraw, ImageTk
 
 APP_NAME = "Eclipse Flow"
-APP_VERSION = "5.1.0"
+APP_VERSION = "5.2.0"
 RELEASE_API = "https://api.github.com/repos/insspombal21-debug/eclipse-downloader/releases/latest"
 HEIGHTS = {"Melhor disponível": None, "2160p (4K)": 2160, "1440p": 1440, "1080p": 1080, "720p": 720, "480p": 480, "360p": 360}
+SPEEDS = {"Sem limite": None, "500 KB/s": 500*1024, "1 MB/s": 1024**2, "2 MB/s": 2*1024**2, "5 MB/s": 5*1024**2, "10 MB/s": 10*1024**2}
 
 class App(tk.Tk):
     def __init__(self):
         super().__init__(); self.title(APP_NAME); self.geometry("1080x720"); self.minsize(920, 620); self.configure(bg="#0b0d17")
-        self.events, self.work = queue.Queue(), queue.Queue(); self.tasks, self.images = {}, {}; self.active = None
+        self.events, self.work, self.analysis = queue.Queue(), queue.Queue(), queue.Queue(); self.tasks, self.images = {}, {}; self.active = None
         self.mode, self.quality = tk.StringVar(value="Vídeo MP4"), tk.StringVar(value="1080p")
-        self.folder = tk.StringVar(value=str(Path.home()/"Downloads")); self.playlist = tk.BooleanVar(); self.status = tk.StringVar(value="Cole links para começar")
+        self.folder = tk.StringVar(value=str(Path.home()/"Downloads")); self.speed = tk.StringVar(value="Sem limite"); self.status = tk.StringVar(value="Cole links para começar")
         self.update_url = self.checksum_url = None
-        self._style(); self._ui(); self.after(100, self._poll); threading.Thread(target=self._worker, daemon=True).start(); self.after(1800, self._check_updates)
+        self._style(); self._ui(); self.after(100, self._poll); threading.Thread(target=self._worker, daemon=True).start()
+        for _ in range(2):threading.Thread(target=self._analysis_worker,daemon=True).start()
+        self.after(1800, self._check_updates)
 
     def _make_logo(self):
         size=56; image=Image.new("RGBA",(size,size),(0,0,0,0)); draw=ImageDraw.Draw(image)
@@ -36,6 +39,7 @@ class App(tk.Tk):
         s.configure("TCombobox",fieldbackground="#0d1020",foreground="#111827",padding=7); s.configure("TCheckbutton",background="#17152b",foreground="#f4f2ff")
         s.configure("Queue.Treeview",background="#17152b",foreground="#f4f2ff",fieldbackground="#17152b",rowheight=72,borderwidth=0,font=("Segoe UI",10))
         s.configure("Queue.Treeview.Heading",background="#282444",foreground="#f4f2ff",font=("Segoe UI Semibold",10)); s.map("Queue.Treeview",background=[("selected","#3b3262")])
+        s.configure("Picker.Treeview",background="#17152b",foreground="#f4f2ff",fieldbackground="#17152b",rowheight=30,borderwidth=0,font=("Segoe UI",10));s.configure("Picker.Treeview.Heading",background="#282444",foreground="#f4f2ff",font=("Segoe UI Semibold",10));s.map("Picker.Treeview",background=[("selected","#5b21b6")])
 
     def _ui(self):
         out=ttk.Frame(self,padding=22); out.pack(fill="both",expand=True)
@@ -48,8 +52,9 @@ class App(tk.Tk):
         ttk.Button(row,text="COLAR",command=self._paste).pack(side="left",padx=(8,0)); ttk.Button(row,text="ADICIONAR À FILA",style="Accent.TButton",command=self._add).pack(side="left",padx=(8,0))
         cfg=ttk.Frame(top,style="Card.TFrame"); cfg.pack(fill="x",pady=(12,0)); ttk.Label(cfg,text="Formato:",style="Card.TLabel").pack(side="left")
         ttk.Combobox(cfg,textvariable=self.mode,state="readonly",width=15,values=["Vídeo MP4","Áudio MP3"]).pack(side="left",padx=(6,16)); ttk.Label(cfg,text="Qualidade:",style="Card.TLabel").pack(side="left")
-        ttk.Combobox(cfg,textvariable=self.quality,state="readonly",width=18,values=list(HEIGHTS)).pack(side="left",padx=(6,16)); ttk.Checkbutton(cfg,text="Playlist inteira",variable=self.playlist).pack(side="left")
-        ttk.Button(cfg,text="Escolher pasta",command=self._choose).pack(side="right"); ttk.Label(cfg,textvariable=self.folder,style="Card.TLabel").pack(side="right",padx=8)
+        ttk.Combobox(cfg,textvariable=self.quality,state="readonly",width=18,values=list(HEIGHTS)).pack(side="left",padx=(6,16)); ttk.Label(cfg,text="Velocidade:",style="Card.TLabel").pack(side="left")
+        ttk.Combobox(cfg,textvariable=self.speed,state="readonly",width=12,values=list(SPEEDS)).pack(side="left",padx=(6,12)); ttk.Label(cfg,text="✓ Playlists detectadas automaticamente",style="Card.TLabel").pack(side="right")
+        dest=ttk.Frame(top,style="Card.TFrame");dest.pack(fill="x",pady=(10,0));ttk.Label(dest,text="Salvar em:",style="Card.TLabel").pack(side="left");ttk.Label(dest,textvariable=self.folder,style="Card.TLabel").pack(side="left",padx=8);ttk.Button(dest,text="Escolher pasta",command=self._choose).pack(side="right")
         card=ttk.Frame(out,style="Card.TFrame",padding=12); card.pack(fill="both",expand=True,pady=(14,0)); ttk.Label(card,text="FILA DE DOWNLOADS",style="Card.TLabel",font=("Segoe UI Semibold",11)).pack(anchor="w",pady=(0,8))
         cols=("title","profile","size","progress","status"); self.list=ttk.Treeview(card,columns=cols,show="tree headings",style="Queue.Treeview",selectmode="browse")
         for col,title in zip(("#0",)+cols,("Miniatura","Título","Formato","Tamanho","Progresso","Status")): self.list.heading(col,text=title)
@@ -58,7 +63,7 @@ class App(tk.Tk):
         bar=ttk.Scrollbar(card,orient="vertical",command=self.list.yview); self.list.configure(yscrollcommand=bar.set); bar.pack(side="right",fill="y"); self.list.pack(fill="both",expand=True)
         self.list.bind("<Button-3>",self._right); self.list.bind("<Double-1>",lambda _e:self._show())
         acts=ttk.Frame(out); acts.pack(fill="x",pady=(12,0))
-        for label,cmd in (("Pausar",self._pause),("Continuar",self._resume),("Cancelar",self._cancel),("Baixar novamente",self._retry),("Mostrar arquivo",self._show),("⋮ Ações",self._popup)):
+        for label,cmd in (("Pausar",self._pause),("Continuar",self._resume),("Cancelar",self._cancel),("Baixar novamente",self._retry),("Mostrar arquivo",self._show),("Limpar concluídos",self._clear_completed),("⋮ Ações",self._popup)):
             ttk.Button(acts,text=label,command=cmd).pack(side="left",padx=(0,7))
         ttk.Label(acts,textvariable=self.status,style="Muted.TLabel").pack(side="right")
         self.menu=tk.Menu(self,tearoff=False); self.menu.add_command(label="Mostrar arquivo na pasta",command=self._show); self.menu.add_command(label="Abrir pasta de destino",command=self._open_folder)
@@ -84,6 +89,10 @@ class App(tk.Tk):
             if vs:
                 v=max(vs,key=lambda f:((f.get("height") or 0),self._fsize(f,d),f.get("tbr") or 0)); result[h]=self._fsize(v,d)+(az if v.get("acodec")=="none" else 0)
         return result,az
+    def _safe_folder(self,name):
+        clean=re.sub(r'[<>:"/\\|?*\x00-\x1f]',"_",name or "Playlist").strip(" .")[:150] or "Playlist"
+        if clean.upper().split(".")[0] in {"CON","PRN","AUX","NUL",*(f"COM{x}" for x in range(1,10)),*(f"LPT{x}" for x in range(1,10))}:clean="_"+clean
+        return clean
 
     def _paste(self):
         try:self.urls.delete("1.0","end");self.urls.insert("1.0",self.clipboard_get().strip())
@@ -92,23 +101,74 @@ class App(tk.Tk):
         found=[u.rstrip(",;)") for u in re.findall(r"https?://[^\s]+",self.urls.get("1.0","end")) if re.match(r"^https?://([\w-]+\.)?(youtube\.com|youtu\.be)/",u,re.I)]
         if not found: messagebox.showwarning(APP_NAME,"Cole pelo menos um link válido do YouTube.");return
         for url in found:
-            i=uuid.uuid4().hex;t={"id":i,"url":url,"title":"Analisando link...","mode":self.mode.get(),"quality":self.quality.get(),"folder":self.folder.get(),"output_folder":self.folder.get(),"playlist":self.playlist.get(),"is_playlist":False,"playlist_title":None,"status":"Analisando","size":0,"progress":"0%","file":None,"pause":False,"cancel":False,"remove":False}
+            i=uuid.uuid4().hex;t={"id":i,"url":url,"title":"Analisando link...","mode":self.mode.get(),"quality":self.quality.get(),"speed":self.speed.get(),"folder":self.folder.get(),"output_folder":self.folder.get(),"playlist":False,"is_playlist":False,"is_playlist_item":False,"playlist_title":None,"playlist_index":None,"analyzed":False,"status":"Analisando","size":0,"progress":"0%","file":None,"pause":False,"cancel":False,"remove":False}
             self.tasks[i]=t;self.list.insert("","end",iid=i,values=(t["title"],self._profile(t),"—","0%","Analisando"));threading.Thread(target=self._analyze,args=(i,),daemon=True).start()
         self.urls.delete("1.0","end");self.status.set(f"{len(found)} item(ns) adicionado(s)")
     def _analyze(self,i):
         t=self.tasks.get(i)
         try:
-            with yt_dlp.YoutubeDL({"quiet":True,"no_warnings":True,"noplaylist":not t["playlist"]}) as y: info=y.extract_info(t["url"],download=False)
-            entries=[e for e in (info.get("entries") or []) if e];is_playlist=bool(t["playlist"] and entries);show=entries[0] if entries else info
-            playlist_title=(info.get("title") or info.get("playlist_title") or "Playlist") if is_playlist else None
-            sizes,audio=self._sizes(show);h=HEIGHTS.get(t["quality"]);size=audio if t["mode"]=="Áudio MP3" else (sizes.get(h) if h else max(sizes.values(),default=0))
+            with yt_dlp.YoutubeDL({"quiet":True,"no_warnings":True,"noplaylist":False,"extract_flat":"in_playlist"}) as y: info=y.extract_info(t["url"],download=False)
+            entries=[e for e in (info.get("entries") or []) if e]
+            if entries:
+                self.events.put(("playlist_select",i,info.get("title") or info.get("playlist_title") or "Playlist",entries));return
+            show=info;sizes,audio=self._sizes(show);h=HEIGHTS.get(t["quality"]);size=audio if t["mode"]=="Áudio MP3" else (sizes.get(h) if h else max(sizes.values(),default=0))
             thumb=None
             try:
                 req=urllib.request.Request(show.get("thumbnail"),headers={"User-Agent":"Mozilla/5.0"});thumb=urllib.request.urlopen(req,timeout=12).read(2_000_000)
             except Exception:pass
-            title=f"Playlist: {playlist_title} ({len(entries)} itens)" if is_playlist else (show.get("title") or info.get("title") or "Conteúdo encontrado")
-            self.events.put(("ready",i,title,size,thumb,is_playlist,playlist_title))
+            self.events.put(("ready",i,show.get("title") or "Conteúdo encontrado",size,thumb))
         except Exception as e:self.events.put(("fail",i,str(e)))
+
+    def _playlist_dialog(self,i,title,entries):
+        parent=self.tasks.get(i)
+        if not parent:return
+        win=tk.Toplevel(self);win.title(f"Selecionar vídeos — {title}");win.geometry("760x540");win.minsize(620,420);win.configure(bg="#0b0d17");win.transient(self);win.grab_set()
+        box=ttk.Frame(win,padding=18);box.pack(fill="both",expand=True)
+        ttk.Label(box,text=title,font=("Segoe UI Semibold",17)).pack(anchor="w");ttk.Label(box,text=f"{len(entries)} vídeos encontrados. Selecione os que deseja baixar.",style="Muted.TLabel").pack(anchor="w",pady=(3,12))
+        tree=ttk.Treeview(box,columns=("number","title","duration"),show="headings",selectmode="extended",style="Picker.Treeview")
+        tree.heading("number",text="#");tree.heading("title",text="Título");tree.heading("duration",text="Duração");tree.column("number",width=55,anchor="center",stretch=False);tree.column("title",width=560);tree.column("duration",width=90,anchor="center",stretch=False)
+        bar=ttk.Scrollbar(box,orient="vertical",command=tree.yview);tree.configure(yscrollcommand=bar.set);bar.pack(side="right",fill="y");tree.pack(fill="both",expand=True)
+        for pos,e in enumerate(entries):
+            seconds=int(e.get("duration") or 0);duration=f"{seconds//60}:{seconds%60:02d}" if seconds else "—"
+            tree.insert("","end",iid=str(pos),values=(e.get("playlist_index") or pos+1,e.get("title") or "Vídeo sem título",duration))
+        tree.selection_set(*tree.get_children())
+        buttons=ttk.Frame(box);buttons.pack(fill="x",pady=(12,0))
+        ttk.Button(buttons,text="Selecionar todos",command=lambda:tree.selection_set(*tree.get_children())).pack(side="left",padx=(0,7));ttk.Button(buttons,text="Desmarcar todos",command=lambda:tree.selection_remove(*tree.get_children())).pack(side="left")
+        def cancel():self._remove_task(i);win.destroy();self.status.set("Seleção da playlist cancelada")
+        def confirm():
+            chosen=sorted((int(x) for x in tree.selection()))
+            if not chosen:messagebox.showwarning(APP_NAME,"Selecione pelo menos um vídeo.",parent=win);return
+            win.destroy();self._expand_playlist(i,title,entries,chosen)
+        ttk.Button(buttons,text="Cancelar",command=cancel).pack(side="right");ttk.Button(buttons,text="ADICIONAR SELECIONADOS",style="Accent.TButton",command=confirm).pack(side="right",padx=(0,7));win.protocol("WM_DELETE_WINDOW",cancel)
+        win.wait_window()
+
+    def _expand_playlist(self,i,title,entries,chosen):
+        parent=self.tasks.get(i)
+        if not parent:return
+        output_folder=str(Path(parent["folder"])/self._safe_folder(title));self._remove_task(i)
+        added=0
+        for pos in chosen:
+            entry=entries[pos];video_id=entry.get("id");url=entry.get("webpage_url") or (f"https://www.youtube.com/watch?v={video_id}" if video_id else entry.get("url"))
+            if not url:continue
+            sizes,audio=self._sizes(entry);h=HEIGHTS.get(parent["quality"]);size=audio if parent["mode"]=="Áudio MP3" else (sizes.get(h) if h else max(sizes.values(),default=0));item_id=uuid.uuid4().hex
+            t={**parent,"id":item_id,"url":url,"title":entry.get("title") or "Vídeo sem título","output_folder":output_folder,"is_playlist":False,"is_playlist_item":True,"playlist_title":title,"playlist_index":entry.get("playlist_index") or pos+1,"analyzed":False,"status":"Na fila","size":size,"progress":"0%","file":None,"pause":False,"cancel":False,"remove":False}
+            t["status"]="Analisando";self.tasks[item_id]=t;self.list.insert("","end",iid=item_id,values=(t["title"],self._profile(t),self._human(size),"0%","Analisando"));self.analysis.put(item_id);added+=1
+        self.status.set(f"{added} vídeo(s) da playlist adicionado(s)")
+
+    def _analysis_worker(self):
+        while True:
+            i=self.analysis.get();t=self.tasks.get(i)
+            if not t or t["status"]!="Analisando":continue
+            try:
+                with yt_dlp.YoutubeDL({"quiet":True,"no_warnings":True,"noplaylist":True}) as y:info=y.extract_info(t["url"],download=False)
+                sizes,audio=self._sizes(info);h=HEIGHTS.get(t["quality"]);size=audio if t["mode"]=="Áudio MP3" else (sizes.get(h) if h else max(sizes.values(),default=0))
+                self.events.put(("item_ready",i,info.get("title") or t["title"],size,info.get("thumbnail")))
+            except Exception as e:self.events.put(("fail",i,str(e)))
+
+    def _load_thumb(self,i,url):
+        try:
+            req=urllib.request.Request(url,headers={"User-Agent":"Mozilla/5.0"});data=urllib.request.urlopen(req,timeout=12).read(2_000_000);self.events.put(("thumb",i,data))
+        except Exception:pass
 
     def _worker(self):
         while True:
@@ -126,13 +186,13 @@ class App(tk.Tk):
                 t["progress"]=f"{pct:.1f}%  {self._human(got)}/{self._human(full)}";t["status"]=(d.get("_speed_str","").strip()+"  "+d.get("_eta_str","").strip()).strip() or "Baixando";self.events.put(("update",t["id"]))
         try:
             folder=Path(t["folder"]);folder.mkdir(parents=True,exist_ok=True)
-            if t.get("is_playlist"):
-                safe_name=re.sub(r'[<>:"/\\|?*\x00-\x1f]',"_",t.get("playlist_title") or "Playlist").strip(" .")[:150] or "Playlist"
-                output_folder=folder/safe_name
+            if t.get("is_playlist") or t.get("is_playlist_item"):
+                output_folder=Path(t.get("output_folder") or folder/self._safe_folder(t.get("playlist_title")))
             else:output_folder=folder
             output_folder.mkdir(parents=True,exist_ok=True);t["output_folder"]=str(output_folder)
-            prefix="%(playlist_index)03d - " if t.get("is_playlist") else ""
+            prefix=f"{int(t.get('playlist_index') or 0):03d} - " if t.get("is_playlist_item") else ("%(playlist_index)03d - " if t.get("is_playlist") else "")
             opts={"outtmpl":str(output_folder/(prefix+"%(title)s [%(id)s].%(ext)s")),"noplaylist":not t["playlist"],"windowsfilenames":True,"progress_hooks":[hook],"ffmpeg_location":imageio_ffmpeg.get_ffmpeg_exe(),"quiet":True,"no_warnings":True,"continuedl":True}
+            if SPEEDS.get(t.get("speed")):opts["ratelimit"]=SPEEDS[t["speed"]]
             if t["mode"]=="Áudio MP3":opts.update({"format":"bestaudio/best","postprocessors":[{"key":"FFmpegExtractAudio","preferredcodec":"mp3","preferredquality":"192"}]})
             else:
                 h=HEIGHTS.get(t["quality"]);opts["format"]=f"bv*[height<={h}]+ba/b[height<={h}]" if h else "bv*+ba/b";opts["merge_output_format"]="mp4"
@@ -153,12 +213,19 @@ class App(tk.Tk):
             while True:
                 e=self.events.get_nowait();kind,i=e[0],e[1];t=self.tasks.get(i)
                 if kind=="ready" and t:
-                    t.update(title=e[2],size=e[3],status="Na fila",is_playlist=e[5],playlist_title=e[6])
+                    t.update(title=e[2],size=e[3],status="Na fila",analyzed=True)
                     if e[4]:
                         try:im=Image.open(io.BytesIO(e[4])).convert("RGB");im.thumbnail((112,63));ph=ImageTk.PhotoImage(im);self.images[i]=ph;self.list.item(i,image=ph)
                         except Exception:pass
                     self._row(i);self.work.put(i)
-                elif kind=="fail" and t:t["status"]="Erro na análise";t["error"]=e[2];self._row(i)
+                elif kind=="playlist_select" and t:self._playlist_dialog(i,e[2],e[3])
+                elif kind=="item_ready" and t and t["status"]=="Analisando":
+                    t.update(title=e[2],size=e[3],status="Na fila",analyzed=True);self._row(i);self.work.put(i)
+                    if e[4]:threading.Thread(target=self._load_thumb,args=(i,e[4]),daemon=True).start()
+                elif kind=="thumb" and t:
+                    try:im=Image.open(io.BytesIO(e[2])).convert("RGB");im.thumbnail((112,63));ph=ImageTk.PhotoImage(im);self.images[i]=ph;self.list.item(i,image=ph)
+                    except Exception:pass
+                elif kind=="fail" and t and t["status"]=="Analisando":t["status"]="Erro na análise";t["error"]=e[2];self._row(i)
                 elif kind=="update":self._row(i)
                 elif kind=="remove":self._remove_task(i)
                 elif kind=="update_available":
@@ -181,13 +248,16 @@ class App(tk.Tk):
     def _resume(self):
         t=self.tasks.get(self._sel())
         if t and t["status"] in ("Pausado","Cancelado","Erro"):
-            t.update(pause=False,cancel=False,status="Na fila");self._row(t["id"]);self.work.put(t["id"])
+            t.update(pause=False,cancel=False,status="Na fila" if t.get("analyzed") else "Analisando");self._row(t["id"])
+            (self.work if t.get("analyzed") else self.analysis).put(t["id"])
     def _cancel(self):
         t=self.tasks.get(self._sel())
         if t:t["cancel"]=True;t["status"]="Cancelando..." if t["id"]==self.active else "Cancelado";self._row(t["id"])
     def _retry(self):
         t=self.tasks.get(self._sel())
-        if t and t["status"]!="Baixando":t.update(pause=False,cancel=False,progress="0%",status="Na fila");self._row(t["id"]);self.work.put(t["id"])
+        if t and t["status"]!="Baixando":
+            t.update(pause=False,cancel=False,progress="0%",status="Na fila" if t.get("analyzed") else "Analisando");self._row(t["id"])
+            (self.work if t.get("analyzed") else self.analysis).put(t["id"])
     def _remove(self):
         t=self.tasks.get(self._sel())
         if t:
@@ -196,6 +266,10 @@ class App(tk.Tk):
     def _remove_task(self,i):
         if self.list.exists(i):self.list.delete(i)
         self.tasks.pop(i,None);self.images.pop(i,None)
+    def _clear_completed(self):
+        completed=[i for i,t in self.tasks.items() if t["status"] in ("Concluído","Arquivo excluído")]
+        for i in completed:self._remove_task(i)
+        self.status.set(f"{len(completed)} item(ns) concluído(s) removido(s) da fila")
     def _show(self):
         t=self.tasks.get(self._sel());p=Path(t["file"]) if t and t.get("file") else None
         if not p or not p.exists():messagebox.showinfo(APP_NAME,"Esse item ainda não possui um arquivo concluído.");return
