@@ -2,39 +2,49 @@ import hashlib, io, json, os, queue, re, subprocess, sys, tempfile, threading, t
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 import imageio_ffmpeg, yt_dlp
-from PIL import Image, ImageTk
+from PIL import Image, ImageDraw, ImageTk
 
-APP_NAME = "Eclipse Downloader"
-APP_VERSION = "4.0.1"
+APP_NAME = "Eclipse Flow"
+APP_VERSION = "5.0.0"
 RELEASE_API = "https://api.github.com/repos/insspombal21-debug/eclipse-downloader/releases/latest"
 HEIGHTS = {"Melhor disponível": None, "2160p (4K)": 2160, "1440p": 1440, "1080p": 1080, "720p": 720, "480p": 480, "360p": 360}
 
 class App(tk.Tk):
     def __init__(self):
-        super().__init__(); self.title(APP_NAME); self.geometry("1080x720"); self.minsize(920, 620); self.configure(bg="#10131a")
+        super().__init__(); self.title(APP_NAME); self.geometry("1080x720"); self.minsize(920, 620); self.configure(bg="#0b0d17")
         self.events, self.work = queue.Queue(), queue.Queue(); self.tasks, self.images = {}, {}; self.active = None
         self.mode, self.quality = tk.StringVar(value="Vídeo MP4"), tk.StringVar(value="1080p")
         self.folder = tk.StringVar(value=str(Path.home()/"Downloads")); self.playlist = tk.BooleanVar(); self.status = tk.StringVar(value="Cole links para começar")
         self.update_url = self.checksum_url = None
         self._style(); self._ui(); self.after(100, self._poll); threading.Thread(target=self._worker, daemon=True).start(); self.after(1800, self._check_updates)
 
+    def _make_logo(self):
+        size=56; image=Image.new("RGBA",(size,size),(0,0,0,0)); draw=ImageDraw.Draw(image)
+        for width,color in ((12,"#312e81"),(8,"#7c3aed"),(4,"#ec4899")):
+            pad=(12-width)//2+5; draw.ellipse((pad,pad,size-pad,size-pad),outline=color,width=width)
+        draw.ellipse((18,12,45,39),fill="#0b0d17")
+        draw.rounded_rectangle((25,16,31,37),radius=3,fill="#ffffff")
+        draw.polygon(((18,32),(38,32),(28,44)),fill="#ffffff")
+        return ImageTk.PhotoImage(image)
+
     def _style(self):
-        s=ttk.Style(self); s.theme_use("clam"); s.configure("TFrame",background="#10131a"); s.configure("Card.TFrame",background="#191e29")
-        s.configure("TLabel",background="#10131a",foreground="#eef2ff",font=("Segoe UI",10)); s.configure("Card.TLabel",background="#191e29",foreground="#eef2ff")
-        s.configure("Title.TLabel",font=("Segoe UI Semibold",22),foreground="white"); s.configure("Muted.TLabel",foreground="#9da8bd")
-        s.configure("TButton",font=("Segoe UI Semibold",10),padding=9); s.configure("Accent.TButton",background="#f51b64",foreground="white",borderwidth=0)
-        s.map("Accent.TButton",background=[("active","#ff3779")]); s.configure("TEntry",fieldbackground="#0f131b",foreground="white",padding=8)
-        s.configure("TCombobox",fieldbackground="#0f131b",foreground="#111827",padding=7); s.configure("TCheckbutton",background="#191e29",foreground="#eef2ff")
-        s.configure("Queue.Treeview",background="#191e29",foreground="#eef2ff",fieldbackground="#191e29",rowheight=72,borderwidth=0,font=("Segoe UI",10))
-        s.configure("Queue.Treeview.Heading",background="#282f3d",foreground="#eef2ff",font=("Segoe UI Semibold",10)); s.map("Queue.Treeview",background=[("selected","#343b4d")])
+        s=ttk.Style(self); s.theme_use("clam"); s.configure("TFrame",background="#0b0d17"); s.configure("Card.TFrame",background="#17152b")
+        s.configure("TLabel",background="#0b0d17",foreground="#f4f2ff",font=("Segoe UI",10)); s.configure("Card.TLabel",background="#17152b",foreground="#f4f2ff")
+        s.configure("Title.TLabel",font=("Segoe UI Semibold",25),foreground="white"); s.configure("Muted.TLabel",foreground="#aaa6c3")
+        s.configure("TButton",font=("Segoe UI Semibold",10),padding=9,background="#24213d",foreground="#f4f2ff"); s.configure("Accent.TButton",background="#ec4899",foreground="white",borderwidth=0)
+        s.map("Accent.TButton",background=[("active","#f472b6")]); s.configure("TEntry",fieldbackground="#0d1020",foreground="white",padding=8)
+        s.configure("TCombobox",fieldbackground="#0d1020",foreground="#111827",padding=7); s.configure("TCheckbutton",background="#17152b",foreground="#f4f2ff")
+        s.configure("Queue.Treeview",background="#17152b",foreground="#f4f2ff",fieldbackground="#17152b",rowheight=72,borderwidth=0,font=("Segoe UI",10))
+        s.configure("Queue.Treeview.Heading",background="#282444",foreground="#f4f2ff",font=("Segoe UI Semibold",10)); s.map("Queue.Treeview",background=[("selected","#3b3262")])
 
     def _ui(self):
         out=ttk.Frame(self,padding=22); out.pack(fill="both",expand=True)
-        title_row=ttk.Frame(out); title_row.pack(fill="x"); ttk.Label(title_row,text=f"{APP_NAME}  v{APP_VERSION}",style="Title.TLabel").pack(side="left")
+        title_row=ttk.Frame(out); title_row.pack(fill="x"); self.brand_logo=self._make_logo(); ttk.Label(title_row,image=self.brand_logo).pack(side="left",padx=(0,11))
+        ttk.Label(title_row,text=f"{APP_NAME}  v{APP_VERSION}",style="Title.TLabel").pack(side="left")
         self.update_btn=ttk.Button(title_row,text="Verificar atualizações",command=self._check_updates); self.update_btn.pack(side="right")
-        ttk.Label(out,text="Fila para conteúdos próprios ou autorizados • Atualizações automáticas ativadas",style="Muted.TLabel").pack(anchor="w",pady=(2,14))
+        ttk.Label(out,text="Seus downloads em movimento  •  Atualizações automáticas ativadas",style="Muted.TLabel").pack(anchor="w",padx=(67,0),pady=(0,14))
         top=ttk.Frame(out,style="Card.TFrame",padding=16); top.pack(fill="x"); row=ttk.Frame(top,style="Card.TFrame"); row.pack(fill="x")
-        self.urls=tk.Text(row,height=2,bg="#0f131b",fg="white",insertbackground="white",relief="flat",font=("Segoe UI",11),padx=10,pady=9); self.urls.pack(side="left",fill="x",expand=True)
+        self.urls=tk.Text(row,height=2,bg="#0d1020",fg="white",insertbackground="#ec4899",relief="flat",font=("Segoe UI",11),padx=10,pady=9); self.urls.pack(side="left",fill="x",expand=True)
         ttk.Button(row,text="COLAR",command=self._paste).pack(side="left",padx=(8,0)); ttk.Button(row,text="ADICIONAR À FILA",style="Accent.TButton",command=self._add).pack(side="left",padx=(8,0))
         cfg=ttk.Frame(top,style="Card.TFrame"); cfg.pack(fill="x",pady=(12,0)); ttk.Label(cfg,text="Formato:",style="Card.TLabel").pack(side="left")
         ttk.Combobox(cfg,textvariable=self.mode,state="readonly",width=15,values=["Vídeo MP4","Áudio MP3"]).pack(side="left",padx=(6,16)); ttk.Label(cfg,text="Qualidade:",style="Card.TLabel").pack(side="left")
