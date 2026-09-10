@@ -69,5 +69,5 @@ jobs:
           if ($LASTEXITCODE -eq 0) {
             gh release upload $tag EclipseDownloader-Portatil-Windows.zip EclipseDownloader-Portatil-Windows.zip.sha256 EclipseFlow-Instalador-Windows.exe EclipseFlow-Instalador-Windows.exe.sha256 --clobber
           } else {
-            gh release create $tag EclipseDownloader-Portatil-Windows.zip EclipseDownloader-Portatil-Windows.zip.sha256 EclipseFlow-Instalador-Windows.exe EclipseFlow-Instalador-Windows.exe.sha256 --title "Eclipse Flow $tag" --notes "Instalador recomendado para Windows e versao portatil. Configuracoes persistentes, progresso geral de playlists, downloads simultaneos e aviso ao concluir." --latest
+            gh release create $tag EclipseDownloader-Portatil-Windows.zip EclipseDownloader-Portatil-Windows.zip.sha256 EclipseFlow-Instalador-Windows.exe EclipseFlow-Instalador-Windows.exe.sha256 --title "Eclipse Flow $tag" --notes "Metadados e capa no MP3, monitor opcional de links copiados, Pausar/Continuar tudo e mensagens de erro mais claras com detalhes tecnicos." --latest
           }

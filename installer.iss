@@ -1,5 +1,5 @@
 #define MyAppName "Eclipse Flow"
-#define MyAppVersion "5.4.0"
+#define MyAppVersion "5.5.0"
 #define MyAppExeName "Eclipse Downloader.exe"
 
 [Setup]
@@ -18,7 +18,7 @@ SolidCompression=yes
 WizardStyle=modern
 SetupIconFile=app.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
-VersionInfoVersion=5.4.0.0
+VersionInfoVersion=5.5.0.0
 CloseApplications=yes
 RestartApplications=yes
 

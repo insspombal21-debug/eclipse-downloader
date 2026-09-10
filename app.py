@@ -7,7 +7,7 @@ try:import winsound
 except ImportError:winsound=None
 
 APP_NAME = "Eclipse Flow"
-APP_VERSION = "5.4.0"
+APP_VERSION = "5.5.0"
 RELEASE_API = "https://api.github.com/repos/insspombal21-debug/eclipse-downloader/releases/latest"
 HEIGHTS = {"Melhor disponível": None, "2160p (4K)": 2160, "1440p": 1440, "1080p": 1080, "720p": 720, "480p": 480, "360p": 360}
 AUDIO_BITRATES = {"320 kbps": 320, "256 kbps": 256, "192 kbps": 192, "128 kbps": 128}
@@ -21,18 +21,18 @@ class App(tk.Tk):
         quality=saved.get("quality") if saved.get("quality") in valid_quality else ("192 kbps" if mode=="Áudio MP3" else "1080p");speed=saved.get("speed") if saved.get("speed") in SPEEDS else "Sem limite";concurrent=str(saved.get("concurrent","1"));concurrent=concurrent if concurrent in ("1","2","3") else "1"
         self.events, self.work, self.analysis = queue.Queue(), queue.Queue(), queue.Queue(); self.tasks, self.images = {}, {}; self.active=set();self.download_condition=threading.Condition();self.download_limit=int(concurrent);self.batch_active=False
         self.mode, self.quality = tk.StringVar(value=mode), tk.StringVar(value=quality)
-        self.folder = tk.StringVar(value=saved.get("folder") or str(Path.home()/"Downloads")); self.speed = tk.StringVar(value=speed);self.concurrent=tk.StringVar(value=concurrent);self.status = tk.StringVar(value="Cole links para começar");self.playlist_status=tk.StringVar(value="")
+        self.folder = tk.StringVar(value=saved.get("folder") or str(Path.home()/"Downloads")); self.speed = tk.StringVar(value=speed);self.concurrent=tk.StringVar(value=concurrent);self.clipboard_watch=tk.BooleanVar(value=bool(saved.get("clipboard_watch",False)));self.last_clipboard="";self.status = tk.StringVar(value="Cole links para começar");self.playlist_status=tk.StringVar(value="")
         self.update_url = self.checksum_url = None
         self._style(); self._ui(); self.after(100, self._poll); threading.Thread(target=self._worker, daemon=True).start()
         for _ in range(2):threading.Thread(target=self._analysis_worker,daemon=True).start()
-        self.protocol("WM_DELETE_WINDOW",self._close);self.after(1800, self._check_updates)
+        self.protocol("WM_DELETE_WINDOW",self._close);self.after(1200,self._watch_clipboard);self.after(1800, self._check_updates)
 
     def _load_settings(self):
         try:return json.loads(self.settings_file.read_text(encoding="utf-8"))
         except (OSError,ValueError):return {}
     def _save_settings(self):
         try:
-            data={"mode":self.mode.get(),"quality":self.quality.get(),"speed":self.speed.get(),"concurrent":self.concurrent.get(),"folder":self.folder.get()};self.settings_file.parent.mkdir(parents=True,exist_ok=True)
+            data={"mode":self.mode.get(),"quality":self.quality.get(),"speed":self.speed.get(),"concurrent":self.concurrent.get(),"folder":self.folder.get(),"clipboard_watch":self.clipboard_watch.get()};self.settings_file.parent.mkdir(parents=True,exist_ok=True)
             temp=self.settings_file.with_suffix(".tmp");temp.write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding="utf-8");temp.replace(self.settings_file)
         except OSError:pass
     def _close(self):self._save_settings();self.destroy()
@@ -73,7 +73,7 @@ class App(tk.Tk):
         cfg=ttk.Frame(top,style="Card.TFrame"); cfg.pack(fill="x",pady=(12,0)); ttk.Label(cfg,text="Formato:",style="Card.TLabel").pack(side="left")
         self.mode_box=ttk.Combobox(cfg,textvariable=self.mode,state="readonly",width=15,values=["Vídeo MP4","Áudio MP3"]);self.mode_box.pack(side="left",padx=(6,16));self.mode_box.bind("<<ComboboxSelected>>",self._mode_changed);ttk.Label(cfg,text="Qualidade:",style="Card.TLabel").pack(side="left")
         quality_values=AUDIO_BITRATES if self.mode.get()=="Áudio MP3" else HEIGHTS;self.quality_box=ttk.Combobox(cfg,textvariable=self.quality,state="readonly",width=18,values=list(quality_values));self.quality_box.pack(side="left",padx=(6,16));self.quality_box.bind("<<ComboboxSelected>>",lambda _e:self._save_settings());ttk.Label(cfg,text="✓ Playlists detectadas automaticamente",style="Card.TLabel").pack(side="right")
-        perf=ttk.Frame(top,style="Card.TFrame");perf.pack(fill="x",pady=(10,0));ttk.Label(perf,text="Limite de velocidade:",style="Card.TLabel").pack(side="left");self.speed_box=ttk.Combobox(perf,textvariable=self.speed,state="readonly",width=12,values=list(SPEEDS));self.speed_box.pack(side="left",padx=(6,18));self.speed_box.bind("<<ComboboxSelected>>",lambda _e:self._save_settings());ttk.Label(perf,text="Downloads simultâneos:",style="Card.TLabel").pack(side="left");self.concurrent_box=ttk.Combobox(perf,textvariable=self.concurrent,state="readonly",width=5,values=("1","2","3"));self.concurrent_box.pack(side="left",padx=6);self.concurrent_box.bind("<<ComboboxSelected>>",self._concurrency_changed)
+        perf=ttk.Frame(top,style="Card.TFrame");perf.pack(fill="x",pady=(10,0));ttk.Label(perf,text="Limite de velocidade:",style="Card.TLabel").pack(side="left");self.speed_box=ttk.Combobox(perf,textvariable=self.speed,state="readonly",width=12,values=list(SPEEDS));self.speed_box.pack(side="left",padx=(6,18));self.speed_box.bind("<<ComboboxSelected>>",lambda _e:self._save_settings());ttk.Label(perf,text="Downloads simultâneos:",style="Card.TLabel").pack(side="left");self.concurrent_box=ttk.Combobox(perf,textvariable=self.concurrent,state="readonly",width=5,values=("1","2","3"));self.concurrent_box.pack(side="left",padx=6);self.concurrent_box.bind("<<ComboboxSelected>>",self._concurrency_changed);ttk.Checkbutton(perf,text="Monitorar links copiados",variable=self.clipboard_watch,command=self._toggle_clipboard).pack(side="right")
         dest=ttk.Frame(top,style="Card.TFrame");dest.pack(fill="x",pady=(10,0));ttk.Label(dest,text="Salvar em:",style="Card.TLabel").pack(side="left");ttk.Label(dest,textvariable=self.folder,style="Card.TLabel").pack(side="left",padx=8);ttk.Button(dest,text="Escolher pasta",command=self._choose).pack(side="right")
         card=ttk.Frame(out,style="Card.TFrame",padding=12); card.pack(fill="both",expand=True,pady=(14,0));head=ttk.Frame(card,style="Card.TFrame");head.pack(fill="x",pady=(0,8));ttk.Label(head,text="FILA DE DOWNLOADS",style="Card.TLabel",font=("Segoe UI Semibold",11)).pack(side="left");ttk.Label(head,textvariable=self.playlist_status,style="Card.TLabel",foreground="#c4b5fd").pack(side="right")
         cols=("title","profile","size","progress","status"); self.list=ttk.Treeview(card,columns=cols,show="tree headings",style="Queue.Treeview",selectmode="browse")
@@ -81,13 +81,13 @@ class App(tk.Tk):
         self.list.column("#0",width=125,stretch=False,anchor="center"); self.list.column("title",width=330); self.list.column("profile",width=115,anchor="center")
         self.list.column("size",width=105,anchor="center"); self.list.column("progress",width=190,anchor="center"); self.list.column("status",width=130,anchor="center")
         bar=ttk.Scrollbar(card,orient="vertical",command=self.list.yview); self.list.configure(yscrollcommand=bar.set); bar.pack(side="right",fill="y"); self.list.pack(fill="both",expand=True)
-        self.list.bind("<Button-3>",self._right); self.list.bind("<Double-1>",lambda _e:self._show())
+        self.list.bind("<Button-3>",self._right); self.list.bind("<Double-1>",lambda _e:self._open_selected())
         acts=ttk.Frame(out); acts.pack(fill="x",pady=(12,0))
-        for label,cmd in (("Pausar",self._pause),("Continuar",self._resume),("Cancelar",self._cancel),("Baixar novamente",self._retry),("Mostrar arquivo",self._show),("Limpar concluídos",self._clear_completed),("⋮ Ações",self._popup)):
+        for label,cmd in (("Pausar",self._pause),("Continuar",self._resume),("Pausar tudo",self._pause_all),("Continuar tudo",self._resume_all),("Cancelar",self._cancel),("Mostrar arquivo",self._show),("Limpar",self._clear_completed),("⋮ Ações",self._popup)):
             ttk.Button(acts,text=label,command=cmd).pack(side="left",padx=(0,7))
-        ttk.Label(acts,textvariable=self.status,style="Muted.TLabel").pack(side="right")
+        ttk.Label(out,textvariable=self.status,style="Muted.TLabel").pack(anchor="e",pady=(5,0))
         self.menu=tk.Menu(self,tearoff=False); self.menu.add_command(label="Mostrar arquivo na pasta",command=self._show); self.menu.add_command(label="Abrir pasta de destino",command=self._open_folder)
-        self.menu.add_command(label="Baixar novamente",command=self._retry); self.menu.add_separator(); self.menu.add_command(label="Remover da fila",command=self._remove); self.menu.add_command(label="Excluir arquivo do computador",command=self._delete_file)
+        self.menu.add_command(label="Baixar novamente",command=self._retry);self.menu.add_command(label="Detalhes do erro",command=self._show_error); self.menu.add_separator(); self.menu.add_command(label="Remover da fila",command=self._remove); self.menu.add_command(label="Excluir arquivo do computador",command=self._delete_file)
 
     def _sel(self):
         x=self.list.selection(); return x[0] if x else None
@@ -115,6 +115,12 @@ class App(tk.Tk):
             duration=info.get("duration") or 0;bitrate=AUDIO_BITRATES.get(t["quality"],192)
             return int(duration*bitrate*1000/8) if duration else audio
         height=HEIGHTS.get(t["quality"]);return sizes.get(height) if height else max(sizes.values(),default=0)
+    @staticmethod
+    def _metadata_hook(d):
+        if d.get("status")!="started":return
+        info=d.get("info_dict") or {}
+        if not (info.get("artist") or info.get("artists")):
+            for key in ("creator","creators","uploader","uploader_id"):info[key]=None
     def _mode_changed(self,_event=None):
         audio=self.mode.get()=="Áudio MP3";values=list(AUDIO_BITRATES if audio else HEIGHTS);self.quality_box.configure(values=values)
         if self.quality.get() not in values:self.quality.set("192 kbps" if audio else "1080p")
@@ -127,6 +133,24 @@ class App(tk.Tk):
     def _paste(self):
         try:self.urls.delete("1.0","end");self.urls.insert("1.0",self.clipboard_get().strip())
         except tk.TclError:pass
+    @staticmethod
+    def _youtube_url(text):
+        match=re.search(r"https?://(?:[\w-]+\.)?(?:youtube\.com|youtu\.be)/[^\s]+",text or "",re.I)
+        return match.group(0).rstrip(",;.)]") if match else None
+    def _toggle_clipboard(self):
+        try:self.last_clipboard=self.clipboard_get().strip()
+        except tk.TclError:self.last_clipboard=""
+        self._save_settings();state="ativado" if self.clipboard_watch.get() else "desativado";self.status.set(f"Monitoramento de links {state}")
+    def _watch_clipboard(self):
+        try:
+            current=self.clipboard_get().strip()
+            if not self.clipboard_watch.get():self.last_clipboard=current
+            elif current!=self.last_clipboard:
+                self.last_clipboard=current;url=self._youtube_url(current)
+                if url and not self.grab_current() and messagebox.askyesno(APP_NAME,"Link do YouTube detectado.\n\nDeseja adicionar à fila?"):
+                    self.urls.delete("1.0","end");self.urls.insert("1.0",url);self._add()
+        except tk.TclError:pass
+        finally:self.after(1000,self._watch_clipboard)
     def _add(self):
         found=[u.rstrip(",;)") for u in re.findall(r"https?://[^\s]+",self.urls.get("1.0","end")) if re.match(r"^https?://([\w-]+\.)?(youtube\.com|youtu\.be)/",u,re.I)]
         if not found: messagebox.showwarning(APP_NAME,"Cole pelo menos um link válido do YouTube.");return
@@ -236,7 +260,7 @@ class App(tk.Tk):
             prefix=f"{int(t.get('playlist_index') or 0):03d} - " if t.get("is_playlist_item") else ("%(playlist_index)03d - " if t.get("is_playlist") else "")
             opts={"outtmpl":str(output_folder/(prefix+"%(title)s [%(id)s].%(ext)s")),"noplaylist":not t["playlist"],"windowsfilenames":True,"progress_hooks":[hook],"ffmpeg_location":imageio_ffmpeg.get_ffmpeg_exe(),"quiet":True,"no_warnings":True,"continuedl":True}
             if SPEEDS.get(t.get("speed")):opts["ratelimit"]=SPEEDS[t["speed"]]
-            if t["mode"]=="Áudio MP3":opts.update({"format":"bestaudio/best","postprocessors":[{"key":"FFmpegExtractAudio","preferredcodec":"mp3","preferredquality":str(AUDIO_BITRATES.get(t["quality"],192))}]})
+            if t["mode"]=="Áudio MP3":opts.update({"format":"bestaudio/best","writethumbnail":True,"postprocessor_hooks":[self._metadata_hook],"postprocessors":[{"key":"FFmpegExtractAudio","preferredcodec":"mp3","preferredquality":str(AUDIO_BITRATES.get(t["quality"],192))},{"key":"FFmpegMetadata","add_metadata":True},{"key":"EmbedThumbnail"}]})
             else:
                 h=HEIGHTS.get(t["quality"]);opts["format"]=f"bv*[height<={h}]+ba/b[height<={h}]" if h else "bv*+ba/b";opts["merge_output_format"]="mp4"
             started=time.time()
@@ -244,13 +268,15 @@ class App(tk.Tk):
             matches=[p for p in output_folder.rglob("*") if p.is_file() and p.stat().st_mtime>=started-3 and p.suffix.lower() not in (".part",".ytdl")]
             t["file"]=str(max(matches,key=lambda p:p.stat().st_mtime)) if matches else None;t["percent"]=100.0;t["progress"]="100%";t["status"]="Concluído"
         except yt_dlp.utils.DownloadCancelled:t["status"]="Pausado" if t["pause"] else "Cancelado"
-        except Exception as e:t["status"]="Erro";t["error"]=str(e)
+        except Exception as e:self._set_error(t,e)
         self.events.put(("update",t["id"]));
         if t.get("remove"):self.events.put(("remove",t["id"]))
 
     def _row(self,i):
         t=self.tasks.get(i)
-        if t and self.list.exists(i):self.list.item(i,values=(t["title"],self._profile(t),self._human(t.get("size")),t["progress"],t["status"]))
+        if t and self.list.exists(i):
+            shown=f"Erro: {t.get('error_label','Falha')}" if t["status"] in ("Erro","Erro na análise") else t["status"]
+            self.list.item(i,values=(t["title"],self._profile(t),self._human(t.get("size")),t["progress"],shown))
         self._refresh_playlist_summary()
     def _refresh_playlist_summary(self):
         items=[t for t in self.tasks.values() if t.get("is_playlist_item")]
@@ -287,7 +313,7 @@ class App(tk.Tk):
                 elif kind=="thumb" and t:
                     try:im=Image.open(io.BytesIO(e[2])).convert("RGB");im.thumbnail((112,63));ph=ImageTk.PhotoImage(im);self.images[i]=ph;self.list.item(i,image=ph)
                     except Exception:pass
-                elif kind=="fail" and t and t["status"]=="Analisando":t["status"]="Erro na análise";t["error"]=e[2];self._row(i)
+                elif kind=="fail" and t and t["status"]=="Analisando":self._set_error(t,e[2],analysis=True);self._row(i)
                 elif kind=="update":self._row(i)
                 elif kind=="finished":self._row(i)
                 elif kind=="remove":self._remove_task(i)
@@ -307,14 +333,29 @@ class App(tk.Tk):
         t=self.tasks.get(self._sel())
         if t and t["status"] not in ("Concluído","Cancelado","Erro"):
             if t["id"] in self.active:t["pause"]=True;t["status"]="Pausando..."
-            elif t["status"]=="Na fila":t["status"]="Pausado"
+            elif t["status"] in ("Na fila","Analisando"):t["status"]="Pausado"
             self._row(t["id"])
     def _resume(self):
         t=self.tasks.get(self._sel())
         if t and t["status"] in ("Pausado","Cancelado","Erro","Erro na análise"):
             self.batch_active=True
-            t.update(pause=False,cancel=False,status="Na fila" if t.get("analyzed") else "Analisando");self._row(t["id"])
+            t.update(pause=False,cancel=False,error=None,error_label=None,error_help=None,status="Na fila" if t.get("analyzed") else "Analisando");self._row(t["id"])
             (self.work if t.get("analyzed") else self.analysis).put(t["id"])
+    def _pause_all(self):
+        changed=0
+        for t in self.tasks.values():
+            if t["id"] in self.active:
+                t["pause"]=True;t["status"]="Pausando...";changed+=1;self._row(t["id"])
+            elif t["status"] in ("Na fila","Analisando"):
+                t["status"]="Pausado";changed+=1;self._row(t["id"])
+        self.status.set(f"{changed} item(ns) pausado(s)" if changed else "Não há downloads para pausar")
+    def _resume_all(self):
+        paused=[t for t in self.tasks.values() if t["status"]=="Pausado"]
+        if paused:self.batch_active=True
+        for t in paused:
+            t.update(pause=False,cancel=False,error=None,error_label=None,error_help=None,status="Na fila" if t.get("analyzed") else "Analisando");self._row(t["id"])
+            (self.work if t.get("analyzed") else self.analysis).put(t["id"])
+        self.status.set(f"{len(paused)} item(ns) retomado(s)" if paused else "Não há downloads pausados")
     def _cancel(self):
         t=self.tasks.get(self._sel())
         if t:t["cancel"]=True;t["status"]="Cancelando..." if t["id"] in self.active else "Cancelado";self._row(t["id"]);self._check_queue_finished()
@@ -322,7 +363,7 @@ class App(tk.Tk):
         t=self.tasks.get(self._sel())
         if t and t["id"] not in self.active and t["status"] not in ("Analisando","Na fila"):
             self.batch_active=True
-            t.update(pause=False,cancel=False,percent=0.0,progress="0%",status="Na fila" if t.get("analyzed") else "Analisando");self._row(t["id"])
+            t.update(pause=False,cancel=False,error=None,error_label=None,error_help=None,percent=0.0,progress="0%",status="Na fila" if t.get("analyzed") else "Analisando");self._row(t["id"])
             (self.work if t.get("analyzed") else self.analysis).put(t["id"])
     def _remove(self):
         t=self.tasks.get(self._sel())
@@ -340,6 +381,41 @@ class App(tk.Tk):
         t=self.tasks.get(self._sel());p=Path(t["file"]) if t and t.get("file") else None
         if not p or not p.exists():messagebox.showinfo(APP_NAME,"Esse item ainda não possui um arquivo concluído.");return
         subprocess.Popen(["explorer","/select,",str(p)])
+    def _open_selected(self):
+        t=self.tasks.get(self._sel())
+        if t and t["status"] in ("Erro","Erro na análise"):self._show_error()
+        else:self._show()
+    @staticmethod
+    def _error_info(error):
+        raw=str(error or "");low=raw.lower()
+        cases=(
+            (("private video","vídeo privado","video is private"),"Vídeo privado","Esse vídeo é privado e não pode ser baixado sem acesso."),
+            (("age-restricted","confirm your age","sign in to confirm your age"),"Restrição de idade","O YouTube exige confirmação de idade ou login para acessar esse vídeo."),
+            (("requested format is not available","format is not available"),"Qualidade indisponível","A qualidade escolhida não existe para esse vídeo. Tente outra qualidade."),
+            (("video unavailable","not available","has been removed","this video is unavailable"),"Vídeo indisponível","O vídeo foi removido, bloqueado na sua região ou não está disponível."),
+            (("no space left","disk full","not enough space"),"Sem espaço no disco","Libere espaço na unidade de destino e tente novamente."),
+            (("timed out","timeout","name resolution","connection reset","network is unreachable"),"Problema de conexão","Verifique sua internet e tente novamente."),
+            (("http error 403","forbidden","access denied"),"Acesso negado","O servidor recusou o acesso. Tente novamente mais tarde ou atualize o aplicativo."),
+            (("ffmpeg","postprocessing"),"Erro de conversão","O download ocorreu, mas houve uma falha ao converter ou incorporar os dados do arquivo."),
+        )
+        for needles,label,help_text in cases:
+            if any(x in low for x in needles):return label,help_text
+        return "Falha no download","Não foi possível concluir este item. Consulte os detalhes técnicos abaixo ou tente novamente."
+    def _set_error(self,t,error,analysis=False):
+        label,help_text=self._error_info(error);t.update(status="Erro na análise" if analysis else "Erro",error=str(error),error_label=label,error_help=help_text)
+    def _show_error(self):
+        t=self.tasks.get(self._sel())
+        if not t or not t.get("error"):
+            messagebox.showinfo(APP_NAME,"Este item não possui detalhes de erro.");return
+        win=tk.Toplevel(self);win.title("Detalhes do erro");win.geometry("700x430");win.minsize(560,360);win.configure(bg="#0b0d17");win.transient(self)
+        box=ttk.Frame(win,padding=20);box.pack(fill="both",expand=True)
+        ttk.Label(box,text=t.get("error_label") or "Falha no download",font=("Segoe UI Semibold",17)).pack(anchor="w")
+        ttk.Label(box,text=t.get("error_help") or "",style="Muted.TLabel",wraplength=650,justify="left").pack(anchor="w",fill="x",pady=(5,14))
+        ttk.Label(box,text="Detalhes técnicos:").pack(anchor="w")
+        detail=tk.Text(box,height=11,bg="#0d1020",fg="#d8d5e8",insertbackground="white",relief="flat",font=("Consolas",9),padx=10,pady=10,wrap="word");detail.pack(fill="both",expand=True,pady=(5,12));detail.insert("1.0",t["error"]);detail.configure(state="disabled")
+        buttons=ttk.Frame(box);buttons.pack(fill="x")
+        def copy_details():self.clipboard_clear();self.clipboard_append(t["error"]);self.status.set("Detalhes do erro copiados")
+        ttk.Button(buttons,text="Copiar detalhes",command=copy_details).pack(side="left");ttk.Button(buttons,text="Fechar",command=win.destroy).pack(side="right")
     def _open_folder(self):
         t=self.tasks.get(self._sel());p=Path(t.get("output_folder",t["folder"]) if t else self.folder.get());p.mkdir(parents=True,exist_ok=True);os.startfile(p)
     def _delete_file(self):
