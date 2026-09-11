@@ -1,13 +1,14 @@
 import hashlib, io, json, os, queue, re, subprocess, sys, tempfile, threading, time, tkinter as tk, urllib.request, uuid, zipfile
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
+from urllib.parse import urlsplit
 import imageio_ffmpeg, yt_dlp
-from PIL import Image, ImageDraw, ImageTk
+from PIL import Image, ImageDraw, ImageFont, ImageTk
 try:import winsound
 except ImportError:winsound=None
 
 APP_NAME = "Eclipse Flow"
-APP_VERSION = "6.0.0"
+APP_VERSION = "6.1.0"
 RELEASE_API = "https://api.github.com/repos/insspombal21-debug/eclipse-downloader/releases/latest"
 HEIGHTS = {"Melhor disponível": None, "2160p (4K)": 2160, "1440p": 1440, "1080p": 1080, "720p": 720, "480p": 480, "360p": 360}
 AUDIO_BITRATES = {"320 kbps": 320, "256 kbps": 256, "192 kbps": 192, "128 kbps": 128}
@@ -18,6 +19,14 @@ CONVERT_AUDIO_QUALITY = ("320 kbps","256 kbps","192 kbps","128 kbps")
 CONVERT_VIDEO_QUALITY = ("Manter resolução","1080p","720p","480p","360p")
 MEDIA_EXTENSIONS = {".mp4",".mkv",".avi",".webm",".mov",".wmv",".m4v",".mpg",".mpeg",".mp3",".wav",".aac",".m4a",".flac",".ogg",".opus",".wma"}
 AUDIO_EXTENSIONS = {".mp3",".wav",".aac",".m4a",".flac",".ogg",".opus",".wma"}
+NETWORKS = ("Detectar automaticamente","YouTube","Facebook","Instagram","TikTok","X / Twitter","Vimeo","Twitch","Reddit","SoundCloud","Dailymotion")
+NETWORK_DOMAINS = {
+    "YouTube":("youtube.com","youtu.be"),"Facebook":("facebook.com","fb.watch","fb.com"),"Instagram":("instagram.com",),
+    "TikTok":("tiktok.com",),"X / Twitter":("x.com","twitter.com"),"Vimeo":("vimeo.com",),"Twitch":("twitch.tv",),
+    "Reddit":("reddit.com","redd.it"),"SoundCloud":("soundcloud.com",),"Dailymotion":("dailymotion.com","dai.ly"),
+}
+NETWORK_COLORS = {"Automático":"#7c3aed","YouTube":"#ef4444","Facebook":"#1877f2","Instagram":"#c026d3","TikTok":"#111827","X / Twitter":"#111827","Vimeo":"#1ab7ea","Twitch":"#9146ff","Reddit":"#ff4500","SoundCloud":"#ff5500","Dailymotion":"#0066dc"}
+NETWORK_STYLES = {name:f"Network{pos}.TButton" for pos,name in enumerate(NETWORK_COLORS)}
 
 class App(tk.Tk):
     def __init__(self):
@@ -27,7 +36,8 @@ class App(tk.Tk):
         quality=saved.get("quality") if saved.get("quality") in valid_quality else ("192 kbps" if mode=="Áudio MP3" else "1080p");speed=saved.get("speed") if saved.get("speed") in SPEEDS else "Sem limite";concurrent=str(saved.get("concurrent","1"));concurrent=concurrent if concurrent in ("1","2","3") else "1"
         self.events, self.work, self.analysis = queue.Queue(), queue.Queue(), queue.Queue(); self.tasks, self.images = {}, {}; self.active=set();self.download_condition=threading.Condition();self.download_limit=int(concurrent);self.batch_active=False
         self.mode, self.quality = tk.StringVar(value=mode), tk.StringVar(value=quality)
-        self.folder = tk.StringVar(value=saved.get("folder") or str(Path.home()/"Downloads")); self.speed = tk.StringVar(value=speed);self.concurrent=tk.StringVar(value=concurrent);self.clipboard_watch=tk.BooleanVar(value=bool(saved.get("clipboard_watch",False)));self.last_clipboard="";self.status = tk.StringVar(value="Cole links para começar");self.playlist_status=tk.StringVar(value="")
+        network=saved.get("network") if saved.get("network") in NETWORKS else "Detectar automaticamente"
+        self.folder = tk.StringVar(value=saved.get("folder") or str(Path.home()/"Downloads")); self.speed = tk.StringVar(value=speed);self.concurrent=tk.StringVar(value=concurrent);self.network=tk.StringVar(value=network);self.clipboard_watch=tk.BooleanVar(value=bool(saved.get("clipboard_watch",False)));self.last_clipboard="";self.status = tk.StringVar(value="Cole links para começar");self.playlist_status=tk.StringVar(value="")
         convert_format=saved.get("convert_format") if saved.get("convert_format") in CONVERT_FORMATS else "MP3";convert_quality=saved.get("convert_quality") or "192 kbps"
         valid_convert_quality=("Sem perda",) if convert_format in ("WAV","FLAC") else (CONVERT_AUDIO_QUALITY if convert_format in CONVERT_AUDIO else CONVERT_VIDEO_QUALITY)
         if convert_quality not in valid_convert_quality:convert_quality="Sem perda" if convert_format in ("WAV","FLAC") else ("192 kbps" if convert_format in CONVERT_AUDIO else "Manter resolução")
@@ -44,7 +54,7 @@ class App(tk.Tk):
         except (OSError,ValueError):return {}
     def _save_settings(self):
         try:
-            data={"mode":self.mode.get(),"quality":self.quality.get(),"speed":self.speed.get(),"concurrent":self.concurrent.get(),"folder":self.folder.get(),"clipboard_watch":self.clipboard_watch.get(),"convert_format":self.convert_format.get(),"convert_quality":self.convert_quality.get(),"convert_folder":self.convert_folder.get()};self.settings_file.parent.mkdir(parents=True,exist_ok=True)
+            data={"mode":self.mode.get(),"quality":self.quality.get(),"speed":self.speed.get(),"concurrent":self.concurrent.get(),"network":self.network.get(),"folder":self.folder.get(),"clipboard_watch":self.clipboard_watch.get(),"convert_format":self.convert_format.get(),"convert_quality":self.convert_quality.get(),"convert_folder":self.convert_folder.get()};self.settings_file.parent.mkdir(parents=True,exist_ok=True)
             temp=self.settings_file.with_suffix(".tmp");temp.write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding="utf-8");temp.replace(self.settings_file)
         except OSError:pass
     def _close(self):
@@ -66,6 +76,21 @@ class App(tk.Tk):
         draw.rounded_rectangle((25,16,31,37),radius=3,fill="#ffffff")
         draw.polygon(((18,32),(38,32),(28,44)),fill="#ffffff")
         return ImageTk.PhotoImage(image)
+    def _make_platform_icons(self):
+        icons={}
+        try:font=ImageFont.truetype("arialbd.ttf",14)
+        except OSError:font=ImageFont.load_default()
+        for name,color in NETWORK_COLORS.items():
+            im=Image.new("RGBA",(22,22),(0,0,0,0));d=ImageDraw.Draw(im);d.ellipse((1,1,21,21),fill=color)
+            if name=="YouTube":d.rounded_rectangle((3,6,19,16),radius=3,fill="#ffffff");d.polygon(((9,8),(9,14),(14,11)),fill=color)
+            elif name=="Instagram":d.rounded_rectangle((5,5,17,17),radius=4,outline="white",width=2);d.ellipse((8,8,14,14),outline="white",width=2);d.ellipse((15,6,17,8),fill="white")
+            elif name=="TikTok":d.line((12,5,12,14,9,17),fill="#25f4ee",width=3);d.ellipse((6,14,12,19),fill="#fe2c55")
+            elif name=="X / Twitter":d.line((7,6,16,17),fill="white",width=2);d.line((16,6,7,17),fill="white",width=2)
+            elif name=="Automático":d.ellipse((5,8,12,14),outline="white",width=2);d.ellipse((10,8,17,14),outline="white",width=2)
+            else:
+                label="f" if name=="Facebook" else name[0];box=d.textbbox((0,0),label,font=font);d.text(((22-(box[2]-box[0]))/2,(22-(box[3]-box[1]))/2-1),label,font=font,fill="white")
+            icons[name]=ImageTk.PhotoImage(im)
+        return icons
 
     def _style(self):
         s=ttk.Style(self); s.theme_use("clam"); s.configure("TFrame",background="#0b0d17"); s.configure("Card.TFrame",background="#17152b")
@@ -74,6 +99,7 @@ class App(tk.Tk):
         s.configure("TButton",font=("Segoe UI Semibold",10),padding=9,background="#24213d",foreground="#f4f2ff"); s.configure("Accent.TButton",background="#ec4899",foreground="white",borderwidth=0)
         s.map("Accent.TButton",background=[("active","#f472b6")]); s.configure("TEntry",fieldbackground="#0d1020",foreground="white",padding=8)
         s.configure("Tab.TButton",font=("Segoe UI Semibold",11),padding=(18,10),background="#17152b",foreground="#aaa6c3",borderwidth=0);s.configure("ActiveTab.TButton",font=("Segoe UI Semibold",11),padding=(18,10),background="#7c3aed",foreground="white",borderwidth=0)
+        for name,color in NETWORK_COLORS.items():s.configure(NETWORK_STYLES[name],font=("Segoe UI Semibold",10),padding=9,background=color,foreground="white",borderwidth=0);s.map(NETWORK_STYLES[name],background=[("active",color)])
         s.configure("TCombobox",fieldbackground="#0d1020",foreground="#111827",padding=7); s.configure("TCheckbutton",background="#17152b",foreground="#f4f2ff")
         s.configure("Queue.Treeview",background="#17152b",foreground="#f4f2ff",fieldbackground="#17152b",rowheight=72,borderwidth=0,font=("Segoe UI",10))
         s.configure("Queue.Treeview.Heading",background="#282444",foreground="#f4f2ff",font=("Segoe UI Semibold",10)); s.map("Queue.Treeview",background=[("selected","#3b3262")])
@@ -88,10 +114,10 @@ class App(tk.Tk):
         tabbar=ttk.Frame(out);tabbar.pack(fill="x",pady=(0,10));self.download_tab_btn=ttk.Button(tabbar,text="↓  Baixar",style="ActiveTab.TButton",command=lambda:self._switch_tab("download"));self.download_tab_btn.pack(side="left",padx=(0,7));self.convert_tab_btn=ttk.Button(tabbar,text="⇄  Converter",style="Tab.TButton",command=lambda:self._switch_tab("convert"));self.convert_tab_btn.pack(side="left")
         self.page_host=ttk.Frame(out);self.page_host.pack(fill="both",expand=True);self.download_page=ttk.Frame(self.page_host);self.convert_page=ttk.Frame(self.page_host)
         out=self.download_page
-        top=ttk.Frame(out,style="Card.TFrame",padding=16); top.pack(fill="x"); row=ttk.Frame(top,style="Card.TFrame"); row.pack(fill="x")
+        top=ttk.Frame(out,style="Card.TFrame",padding=16); top.pack(fill="x"); row=ttk.Frame(top,style="Card.TFrame"); row.pack(fill="x");self.platform_icons=self._make_platform_icons()
         self.urls=tk.Text(row,height=2,bg="#0d1020",fg="white",insertbackground="#ec4899",relief="flat",font=("Segoe UI",11),padx=10,pady=9); self.urls.pack(side="left",fill="x",expand=True)
-        ttk.Button(row,text="COLAR",command=self._paste).pack(side="left",padx=(8,0)); ttk.Button(row,text="ADICIONAR À FILA",style="Accent.TButton",command=self._add).pack(side="left",padx=(8,0))
-        cfg=ttk.Frame(top,style="Card.TFrame"); cfg.pack(fill="x",pady=(12,0)); ttk.Label(cfg,text="Formato:",style="Card.TLabel").pack(side="left")
+        self.paste_btn=ttk.Button(row,text="Colar link",image=self.platform_icons["Automático"],compound="left",style=NETWORK_STYLES["Automático"],command=self._paste);self.paste_btn.pack(side="left",padx=(8,0)); ttk.Button(row,text="ADICIONAR À FILA",style="Accent.TButton",command=self._add).pack(side="left",padx=(8,0))
+        cfg=ttk.Frame(top,style="Card.TFrame"); cfg.pack(fill="x",pady=(12,0));ttk.Label(cfg,text="Rede:",style="Card.TLabel").pack(side="left");self.network_box=ttk.Combobox(cfg,textvariable=self.network,state="readonly",width=20,values=NETWORKS);self.network_box.pack(side="left",padx=(6,16));self.network_box.bind("<<ComboboxSelected>>",self._network_changed);ttk.Label(cfg,text="Formato:",style="Card.TLabel").pack(side="left")
         self.mode_box=ttk.Combobox(cfg,textvariable=self.mode,state="readonly",width=15,values=["Vídeo MP4","Áudio MP3"]);self.mode_box.pack(side="left",padx=(6,16));self.mode_box.bind("<<ComboboxSelected>>",self._mode_changed);ttk.Label(cfg,text="Qualidade:",style="Card.TLabel").pack(side="left")
         quality_values=AUDIO_BITRATES if self.mode.get()=="Áudio MP3" else HEIGHTS;self.quality_box=ttk.Combobox(cfg,textvariable=self.quality,state="readonly",width=18,values=list(quality_values));self.quality_box.pack(side="left",padx=(6,16));self.quality_box.bind("<<ComboboxSelected>>",lambda _e:self._save_settings());ttk.Label(cfg,text="✓ Playlists detectadas automaticamente",style="Card.TLabel").pack(side="right")
         perf=ttk.Frame(top,style="Card.TFrame");perf.pack(fill="x",pady=(10,0));ttk.Label(perf,text="Limite de velocidade:",style="Card.TLabel").pack(side="left");self.speed_box=ttk.Combobox(perf,textvariable=self.speed,state="readonly",width=12,values=list(SPEEDS));self.speed_box.pack(side="left",padx=(6,18));self.speed_box.bind("<<ComboboxSelected>>",lambda _e:self._save_settings());ttk.Label(perf,text="Downloads simultâneos:",style="Card.TLabel").pack(side="left");self.concurrent_box=ttk.Combobox(perf,textvariable=self.concurrent,state="readonly",width=5,values=("1","2","3"));self.concurrent_box.pack(side="left",padx=6);self.concurrent_box.bind("<<ComboboxSelected>>",self._concurrency_changed);ttk.Checkbutton(perf,text="Monitorar links copiados",variable=self.clipboard_watch,command=self._toggle_clipboard).pack(side="right")
@@ -109,7 +135,7 @@ class App(tk.Tk):
         ttk.Label(out,textvariable=self.status,style="Muted.TLabel").pack(anchor="e",pady=(5,0))
         self.menu=tk.Menu(self,tearoff=False); self.menu.add_command(label="Mostrar arquivo na pasta",command=self._show); self.menu.add_command(label="Abrir pasta de destino",command=self._open_folder)
         self.menu.add_command(label="Baixar novamente",command=self._retry);self.menu.add_command(label="Detalhes do erro",command=self._show_error); self.menu.add_separator(); self.menu.add_command(label="Remover da fila",command=self._remove); self.menu.add_command(label="Excluir arquivo do computador",command=self._delete_file)
-        self._converter_ui(self.convert_page);self._convert_format_changed();self._switch_tab("download")
+        self._converter_ui(self.convert_page);self._convert_format_changed();self._network_changed();self._switch_tab("download")
 
     def _switch_tab(self,name):
         self.download_page.pack_forget();self.convert_page.pack_forget()
@@ -296,34 +322,59 @@ class App(tk.Tk):
         return clean
 
     def _paste(self):
-        try:self.urls.delete("1.0","end");self.urls.insert("1.0",self.clipboard_get().strip())
+        try:
+            content=self.clipboard_get().strip();self.urls.delete("1.0","end");self.urls.insert("1.0",content);self._update_paste_button(content)
         except tk.TclError:pass
     @staticmethod
-    def _youtube_url(text):
-        match=re.search(r"https?://(?:[\w-]+\.)?(?:youtube\.com|youtu\.be)/[^\s]+",text or "",re.I)
-        return match.group(0).rstrip(",;.)]") if match else None
+    def _detect_platform(url):
+        try:host=(urlsplit(url).hostname or "").lower().removeprefix("www.")
+        except ValueError:return None
+        for name,domains in NETWORK_DOMAINS.items():
+            if any(host==domain or host.endswith("."+domain) for domain in domains):return name
+        return None
+    @classmethod
+    def _supported_urls(cls,text):
+        result=[]
+        for raw in re.findall(r"https?://[^\s]+",text or "",re.I):
+            url=raw.rstrip(",;.)]}")
+            if cls._detect_platform(url):result.append(url)
+        return result
+    @classmethod
+    def _supported_url(cls,text):
+        urls=cls._supported_urls(text);return urls[0] if urls else None
+    def _update_paste_button(self,text=""):
+        url=self._supported_url(text);detected=self._detect_platform(url) if url else None;selected=self.network.get();shown=detected if selected=="Detectar automaticamente" and detected else (selected if selected!="Detectar automaticamente" else "Automático")
+        self.paste_btn.configure(image=self.platform_icons[shown],style=NETWORK_STYLES[shown],text="Colar link")
+    def _network_changed(self,_event=None):
+        try:current=self.clipboard_get().strip()
+        except tk.TclError:current=""
+        self._update_paste_button(current);self._save_settings()
     def _toggle_clipboard(self):
         try:self.last_clipboard=self.clipboard_get().strip()
         except tk.TclError:self.last_clipboard=""
         self._save_settings();state="ativado" if self.clipboard_watch.get() else "desativado";self.status.set(f"Monitoramento de links {state}")
     def _watch_clipboard(self):
         try:
-            current=self.clipboard_get().strip()
+            current=self.clipboard_get().strip();self._update_paste_button(current)
             if not self.clipboard_watch.get():self.last_clipboard=current
             elif current!=self.last_clipboard:
-                self.last_clipboard=current;url=self._youtube_url(current)
-                if url and not self.grab_current() and messagebox.askyesno(APP_NAME,"Link do YouTube detectado.\n\nDeseja adicionar à fila?"):
+                self.last_clipboard=current;url=self._supported_url(current);platform=self._detect_platform(url) if url else None;selected=self.network.get();allowed=selected=="Detectar automaticamente" or selected==platform
+                if url and allowed and not self.grab_current() and messagebox.askyesno(APP_NAME,f"Link do {platform} detectado.\n\nDeseja adicionar à fila?"):
                     self.urls.delete("1.0","end");self.urls.insert("1.0",url);self._add()
         except tk.TclError:pass
         finally:self.after(1000,self._watch_clipboard)
     def _add(self):
-        found=[u.rstrip(",;)") for u in re.findall(r"https?://[^\s]+",self.urls.get("1.0","end")) if re.match(r"^https?://([\w-]+\.)?(youtube\.com|youtu\.be)/",u,re.I)]
-        if not found: messagebox.showwarning(APP_NAME,"Cole pelo menos um link válido do YouTube.");return
+        found=self._supported_urls(self.urls.get("1.0","end"));selected=self.network.get()
+        if selected!="Detectar automaticamente":
+            matching=[u for u in found if self._detect_platform(u)==selected]
+            if found and not matching:messagebox.showwarning(APP_NAME,f"O link colado não pertence à rede selecionada ({selected}).\n\nEscolha Detectar automaticamente ou selecione a rede correta.");return
+            found=matching
+        if not found:messagebox.showwarning(APP_NAME,"Cole pelo menos um link válido de uma rede compatível.");return
         self.batch_active=True;self._save_settings()
         for url in found:
-            i=uuid.uuid4().hex;t={"id":i,"url":url,"title":"Analisando link...","mode":self.mode.get(),"quality":self.quality.get(),"speed":self.speed.get(),"folder":self.folder.get(),"output_folder":self.folder.get(),"playlist":False,"is_playlist":False,"is_playlist_item":False,"playlist_title":None,"playlist_index":None,"analyzed":False,"status":"Analisando","size":0,"percent":0.0,"progress":"0%","file":None,"pause":False,"cancel":False,"remove":False}
+            i=uuid.uuid4().hex;t={"id":i,"url":url,"platform":self._detect_platform(url),"title":"Analisando link...","mode":self.mode.get(),"quality":self.quality.get(),"speed":self.speed.get(),"folder":self.folder.get(),"output_folder":self.folder.get(),"playlist":False,"is_playlist":False,"is_playlist_item":False,"playlist_title":None,"playlist_index":None,"analyzed":False,"status":"Analisando","size":0,"percent":0.0,"progress":"0%","file":None,"pause":False,"cancel":False,"remove":False}
             self.tasks[i]=t;self.list.insert("","end",iid=i,values=(t["title"],self._profile(t),"—","0%","Analisando"));threading.Thread(target=self._analyze,args=(i,),daemon=True).start()
-        self.urls.delete("1.0","end");self.status.set(f"{len(found)} item(ns) adicionado(s)")
+        platforms=", ".join(sorted({self._detect_platform(u) for u in found}));self.urls.delete("1.0","end");self.status.set(f"{len(found)} item(ns) de {platforms} adicionado(s)")
     def _analyze(self,i):
         t=self.tasks.get(i)
         try:
@@ -559,9 +610,9 @@ class App(tk.Tk):
         raw=str(error or "");low=raw.lower()
         cases=(
             (("private video","vídeo privado","video is private"),"Vídeo privado","Esse vídeo é privado e não pode ser baixado sem acesso."),
-            (("age-restricted","confirm your age","sign in to confirm your age"),"Restrição de idade","O YouTube exige confirmação de idade ou login para acessar esse vídeo."),
+            (("age-restricted","confirm your age","sign in to confirm your age"),"Restrição de idade","A rede social exige confirmação de idade ou login para acessar esse vídeo."),
             (("requested format is not available","format is not available"),"Qualidade indisponível","A qualidade escolhida não existe para esse vídeo. Tente outra qualidade."),
-            (("video unavailable","not available","has been removed","this video is unavailable"),"Vídeo indisponível","O vídeo foi removido, bloqueado na sua região ou não está disponível."),
+            (("video unavailable","not available","has been removed","this video is unavailable"),"Vídeo indisponível","O vídeo foi removido, bloqueado na sua região ou não está disponível publicamente."),
             (("no space left","disk full","not enough space"),"Sem espaço no disco","Libere espaço na unidade de destino e tente novamente."),
             (("timed out","timeout","name resolution","connection reset","network is unreachable"),"Problema de conexão","Verifique sua internet e tente novamente."),
             (("http error 403","forbidden","access denied"),"Acesso negado","O servidor recusou o acesso. Tente novamente mais tarde ou atualize o aplicativo."),
