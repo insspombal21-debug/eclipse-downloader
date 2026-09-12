@@ -8,11 +8,13 @@ try:import winsound
 except ImportError:winsound=None
 
 APP_NAME = "Eclipse Flow"
-APP_VERSION = "6.1.0"
+APP_VERSION = "6.2.0"
 RELEASE_API = "https://api.github.com/repos/insspombal21-debug/eclipse-downloader/releases/latest"
 HEIGHTS = {"Melhor disponível": None, "2160p (4K)": 2160, "1440p": 1440, "1080p": 1080, "720p": 720, "480p": 480, "360p": 360}
 AUDIO_BITRATES = {"320 kbps": 320, "256 kbps": 256, "192 kbps": 192, "128 kbps": 128}
 SPEEDS = {"Sem limite": None, "500 KB/s": 500*1024, "1 MB/s": 1024**2, "2 MB/s": 2*1024**2, "5 MB/s": 5*1024**2, "10 MB/s": 10*1024**2}
+BOOST_MODES = ("Automática","Normal","Rápida","Turbo")
+BOOST_FRAGMENTS = {"Normal":1,"Rápida":4,"Turbo":8}
 CONVERT_FORMATS = ("MP3","WAV","AAC","FLAC","OGG","MP4","MKV","AVI","WEBM")
 CONVERT_AUDIO = {"MP3","WAV","AAC","FLAC","OGG"}
 CONVERT_AUDIO_QUALITY = ("320 kbps","256 kbps","192 kbps","128 kbps")
@@ -33,11 +35,11 @@ class App(tk.Tk):
         super().__init__(); self.title(APP_NAME); self.geometry("1080x720"); self.minsize(920, 620); self.configure(bg="#0b0d17")
         self.settings_file=Path(os.getenv("APPDATA") or Path.home())/APP_NAME/"config.json";saved=self._load_settings()
         mode=saved.get("mode") if saved.get("mode") in ("Vídeo MP4","Áudio MP3") else "Vídeo MP4";valid_quality=AUDIO_BITRATES if mode=="Áudio MP3" else HEIGHTS
-        quality=saved.get("quality") if saved.get("quality") in valid_quality else ("192 kbps" if mode=="Áudio MP3" else "1080p");speed=saved.get("speed") if saved.get("speed") in SPEEDS else "Sem limite";concurrent=str(saved.get("concurrent","1"));concurrent=concurrent if concurrent in ("1","2","3") else "1"
+        quality=saved.get("quality") if saved.get("quality") in valid_quality else ("192 kbps" if mode=="Áudio MP3" else "1080p");speed=saved.get("speed") if saved.get("speed") in SPEEDS else "Sem limite";concurrent=str(saved.get("concurrent","1"));concurrent=concurrent if concurrent in ("1","2","3") else "1";boost=saved.get("boost") if saved.get("boost") in BOOST_MODES else "Automática"
         self.events, self.work, self.analysis = queue.Queue(), queue.Queue(), queue.Queue(); self.tasks, self.images = {}, {}; self.active=set();self.download_condition=threading.Condition();self.download_limit=int(concurrent);self.batch_active=False
         self.mode, self.quality = tk.StringVar(value=mode), tk.StringVar(value=quality)
         network=saved.get("network") if saved.get("network") in NETWORKS else "Detectar automaticamente"
-        self.folder = tk.StringVar(value=saved.get("folder") or str(Path.home()/"Downloads")); self.speed = tk.StringVar(value=speed);self.concurrent=tk.StringVar(value=concurrent);self.network=tk.StringVar(value=network);self.clipboard_watch=tk.BooleanVar(value=bool(saved.get("clipboard_watch",False)));self.last_clipboard="";self.status = tk.StringVar(value="Cole links para começar");self.playlist_status=tk.StringVar(value="")
+        self.folder = tk.StringVar(value=saved.get("folder") or str(Path.home()/"Downloads")); self.speed = tk.StringVar(value=speed);self.concurrent=tk.StringVar(value=concurrent);self.boost=tk.StringVar(value=boost);self.network=tk.StringVar(value=network);self.clipboard_watch=tk.BooleanVar(value=bool(saved.get("clipboard_watch",False)));self.last_clipboard="";self.status = tk.StringVar(value="Cole links para começar");self.playlist_status=tk.StringVar(value="")
         convert_format=saved.get("convert_format") if saved.get("convert_format") in CONVERT_FORMATS else "MP3";convert_quality=saved.get("convert_quality") or "192 kbps"
         valid_convert_quality=("Sem perda",) if convert_format in ("WAV","FLAC") else (CONVERT_AUDIO_QUALITY if convert_format in CONVERT_AUDIO else CONVERT_VIDEO_QUALITY)
         if convert_quality not in valid_convert_quality:convert_quality="Sem perda" if convert_format in ("WAV","FLAC") else ("192 kbps" if convert_format in CONVERT_AUDIO else "Manter resolução")
@@ -54,7 +56,7 @@ class App(tk.Tk):
         except (OSError,ValueError):return {}
     def _save_settings(self):
         try:
-            data={"mode":self.mode.get(),"quality":self.quality.get(),"speed":self.speed.get(),"concurrent":self.concurrent.get(),"network":self.network.get(),"folder":self.folder.get(),"clipboard_watch":self.clipboard_watch.get(),"convert_format":self.convert_format.get(),"convert_quality":self.convert_quality.get(),"convert_folder":self.convert_folder.get()};self.settings_file.parent.mkdir(parents=True,exist_ok=True)
+            data={"mode":self.mode.get(),"quality":self.quality.get(),"speed":self.speed.get(),"concurrent":self.concurrent.get(),"boost":self.boost.get(),"network":self.network.get(),"folder":self.folder.get(),"clipboard_watch":self.clipboard_watch.get(),"convert_format":self.convert_format.get(),"convert_quality":self.convert_quality.get(),"convert_folder":self.convert_folder.get()};self.settings_file.parent.mkdir(parents=True,exist_ok=True)
             temp=self.settings_file.with_suffix(".tmp");temp.write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding="utf-8");temp.replace(self.settings_file)
         except OSError:pass
     def _close(self):
@@ -67,6 +69,15 @@ class App(tk.Tk):
         self.download_limit=int(self.concurrent.get())
         with self.download_condition:self.download_condition.notify_all()
         self._save_settings();self.status.set(f"Até {self.download_limit} download(s) ao mesmo tempo")
+    def _boost_changed(self,_event=None):
+        parts=self._fragment_count({"boost":self.boost.get(),"speed":self.speed.get()});self._save_settings()
+        if self.speed.get()!="Sem limite":self.status.set("A aceleração usa 1 conexão enquanto houver limite de velocidade")
+        else:self.status.set(f"Modo {self.boost.get()}: até {parts} partes simultâneas por download")
+    def _fragment_count(self,t):
+        if SPEEDS.get(t.get("speed")):return 1
+        mode=t.get("boost") or "Automática"
+        if mode=="Automática":return {1:6,2:4,3:2}.get(self.download_limit,2)
+        return BOOST_FRAGMENTS.get(mode,1)
 
     def _make_logo(self):
         size=56; image=Image.new("RGBA",(size,size),(0,0,0,0)); draw=ImageDraw.Draw(image)
@@ -120,7 +131,7 @@ class App(tk.Tk):
         cfg=ttk.Frame(top,style="Card.TFrame"); cfg.pack(fill="x",pady=(12,0));ttk.Label(cfg,text="Rede:",style="Card.TLabel").pack(side="left");self.network_box=ttk.Combobox(cfg,textvariable=self.network,state="readonly",width=20,values=NETWORKS);self.network_box.pack(side="left",padx=(6,16));self.network_box.bind("<<ComboboxSelected>>",self._network_changed);ttk.Label(cfg,text="Formato:",style="Card.TLabel").pack(side="left")
         self.mode_box=ttk.Combobox(cfg,textvariable=self.mode,state="readonly",width=15,values=["Vídeo MP4","Áudio MP3"]);self.mode_box.pack(side="left",padx=(6,16));self.mode_box.bind("<<ComboboxSelected>>",self._mode_changed);ttk.Label(cfg,text="Qualidade:",style="Card.TLabel").pack(side="left")
         quality_values=AUDIO_BITRATES if self.mode.get()=="Áudio MP3" else HEIGHTS;self.quality_box=ttk.Combobox(cfg,textvariable=self.quality,state="readonly",width=18,values=list(quality_values));self.quality_box.pack(side="left",padx=(6,16));self.quality_box.bind("<<ComboboxSelected>>",lambda _e:self._save_settings());ttk.Label(cfg,text="✓ Playlists detectadas automaticamente",style="Card.TLabel").pack(side="right")
-        perf=ttk.Frame(top,style="Card.TFrame");perf.pack(fill="x",pady=(10,0));ttk.Label(perf,text="Limite de velocidade:",style="Card.TLabel").pack(side="left");self.speed_box=ttk.Combobox(perf,textvariable=self.speed,state="readonly",width=12,values=list(SPEEDS));self.speed_box.pack(side="left",padx=(6,18));self.speed_box.bind("<<ComboboxSelected>>",lambda _e:self._save_settings());ttk.Label(perf,text="Downloads simultâneos:",style="Card.TLabel").pack(side="left");self.concurrent_box=ttk.Combobox(perf,textvariable=self.concurrent,state="readonly",width=5,values=("1","2","3"));self.concurrent_box.pack(side="left",padx=6);self.concurrent_box.bind("<<ComboboxSelected>>",self._concurrency_changed);ttk.Checkbutton(perf,text="Monitorar links copiados",variable=self.clipboard_watch,command=self._toggle_clipboard).pack(side="right")
+        perf=ttk.Frame(top,style="Card.TFrame");perf.pack(fill="x",pady=(10,0));ttk.Label(perf,text="Limite:",style="Card.TLabel").pack(side="left");self.speed_box=ttk.Combobox(perf,textvariable=self.speed,state="readonly",width=12,values=list(SPEEDS));self.speed_box.pack(side="left",padx=(6,14));self.speed_box.bind("<<ComboboxSelected>>",self._boost_changed);ttk.Label(perf,text="Downloads:",style="Card.TLabel").pack(side="left");self.concurrent_box=ttk.Combobox(perf,textvariable=self.concurrent,state="readonly",width=4,values=("1","2","3"));self.concurrent_box.pack(side="left",padx=(6,14));self.concurrent_box.bind("<<ComboboxSelected>>",self._concurrency_changed);ttk.Label(perf,text="Conexão:",style="Card.TLabel").pack(side="left");self.boost_box=ttk.Combobox(perf,textvariable=self.boost,state="readonly",width=10,values=BOOST_MODES);self.boost_box.pack(side="left",padx=6);self.boost_box.bind("<<ComboboxSelected>>",self._boost_changed);ttk.Checkbutton(perf,text="Monitorar links copiados",variable=self.clipboard_watch,command=self._toggle_clipboard).pack(side="right")
         dest=ttk.Frame(top,style="Card.TFrame");dest.pack(fill="x",pady=(10,0));ttk.Label(dest,text="Salvar em:",style="Card.TLabel").pack(side="left");ttk.Label(dest,textvariable=self.folder,style="Card.TLabel").pack(side="left",padx=8);ttk.Button(dest,text="Escolher pasta",command=self._choose).pack(side="right")
         card=ttk.Frame(out,style="Card.TFrame",padding=12); card.pack(fill="both",expand=True,pady=(14,0));head=ttk.Frame(card,style="Card.TFrame");head.pack(fill="x",pady=(0,8));ttk.Label(head,text="FILA DE DOWNLOADS",style="Card.TLabel",font=("Segoe UI Semibold",11)).pack(side="left");ttk.Label(head,textvariable=self.playlist_status,style="Card.TLabel",foreground="#c4b5fd").pack(side="right")
         cols=("title","profile","size","progress","status"); self.list=ttk.Treeview(card,columns=cols,show="tree headings",style="Queue.Treeview",selectmode="browse")
@@ -372,7 +383,7 @@ class App(tk.Tk):
         if not found:messagebox.showwarning(APP_NAME,"Cole pelo menos um link válido de uma rede compatível.");return
         self.batch_active=True;self._save_settings()
         for url in found:
-            i=uuid.uuid4().hex;t={"id":i,"url":url,"platform":self._detect_platform(url),"title":"Analisando link...","mode":self.mode.get(),"quality":self.quality.get(),"speed":self.speed.get(),"folder":self.folder.get(),"output_folder":self.folder.get(),"playlist":False,"is_playlist":False,"is_playlist_item":False,"playlist_title":None,"playlist_index":None,"analyzed":False,"status":"Analisando","size":0,"percent":0.0,"progress":"0%","file":None,"pause":False,"cancel":False,"remove":False}
+            i=uuid.uuid4().hex;t={"id":i,"url":url,"platform":self._detect_platform(url),"title":"Analisando link...","mode":self.mode.get(),"quality":self.quality.get(),"speed":self.speed.get(),"boost":self.boost.get(),"folder":self.folder.get(),"output_folder":self.folder.get(),"playlist":False,"is_playlist":False,"is_playlist_item":False,"playlist_title":None,"playlist_index":None,"analyzed":False,"status":"Analisando","size":0,"percent":0.0,"progress":"0%","file":None,"pause":False,"cancel":False,"remove":False}
             self.tasks[i]=t;self.list.insert("","end",iid=i,values=(t["title"],self._profile(t),"—","0%","Analisando"));threading.Thread(target=self._analyze,args=(i,),daemon=True).start()
         platforms=", ".join(sorted({self._detect_platform(u) for u in found}));self.urls.delete("1.0","end");self.status.set(f"{len(found)} item(ns) de {platforms} adicionado(s)")
     def _analyze(self,i):
@@ -474,7 +485,7 @@ class App(tk.Tk):
             else:output_folder=folder
             output_folder.mkdir(parents=True,exist_ok=True);t["output_folder"]=str(output_folder)
             prefix=f"{int(t.get('playlist_index') or 0):03d} - " if t.get("is_playlist_item") else ("%(playlist_index)03d - " if t.get("is_playlist") else "")
-            opts={"outtmpl":str(output_folder/(prefix+"%(title)s [%(id)s].%(ext)s")),"noplaylist":not t["playlist"],"windowsfilenames":True,"progress_hooks":[hook],"ffmpeg_location":imageio_ffmpeg.get_ffmpeg_exe(),"quiet":True,"no_warnings":True,"continuedl":True}
+            opts={"outtmpl":str(output_folder/(prefix+"%(title)s [%(id)s].%(ext)s")),"noplaylist":not t["playlist"],"windowsfilenames":True,"progress_hooks":[hook],"ffmpeg_location":imageio_ffmpeg.get_ffmpeg_exe(),"quiet":True,"no_warnings":True,"continuedl":True,"concurrent_fragment_downloads":self._fragment_count(t)}
             if SPEEDS.get(t.get("speed")):opts["ratelimit"]=SPEEDS[t["speed"]]
             if t["mode"]=="Áudio MP3":opts.update({"format":"bestaudio/best","writethumbnail":True,"postprocessor_hooks":[self._metadata_hook],"postprocessors":[{"key":"FFmpegExtractAudio","preferredcodec":"mp3","preferredquality":str(AUDIO_BITRATES.get(t["quality"],192))},{"key":"FFmpegMetadata","add_metadata":True},{"key":"EmbedThumbnail"}]})
             else:

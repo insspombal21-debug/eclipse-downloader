@@ -69,5 +69,5 @@ jobs:
           if ($LASTEXITCODE -eq 0) {
             gh release upload $tag EclipseDownloader-Portatil-Windows.zip EclipseDownloader-Portatil-Windows.zip.sha256 EclipseFlow-Instalador-Windows.exe EclipseFlow-Instalador-Windows.exe.sha256 --clobber
           } else {
-            gh release create $tag EclipseDownloader-Portatil-Windows.zip EclipseDownloader-Portatil-Windows.zip.sha256 EclipseFlow-Instalador-Windows.exe EclipseFlow-Instalador-Windows.exe.sha256 --title "Eclipse Flow $tag" --notes "Downloads de YouTube, Facebook, Instagram, TikTok, X/Twitter, Vimeo, Twitch, Reddit, SoundCloud e Dailymotion. Deteccao automatica da rede e botao Colar link com icone e cor dinamicos." --latest
+            gh release create $tag EclipseDownloader-Portatil-Windows.zip EclipseDownloader-Portatil-Windows.zip.sha256 EclipseFlow-Instalador-Windows.exe EclipseFlow-Instalador-Windows.exe.sha256 --title "Eclipse Flow $tag" --notes "Novo modo de conexao Automatica, Normal, Rapida e Turbo. Downloads DASH/HLS podem usar varias partes simultaneas, sem dependencias adicionais e respeitando o limite de velocidade." --latest
           }
